@@ -73,8 +73,18 @@ func (d *Dataset) Bounds() ([4]float64, error) {
 	return bounds, nil
 }
 
-// Get projected geographic bounds of dataset: [xmin, ymin, xmax, ymax]
+// Get geographic bounds of dataset: [xmin, ymin, xmax, ymax]
 func (d *Dataset) GeoBounds() ([4]float64, error) {
+	return d.transformBounds("EPSG:4326")
+}
+
+// Get Mercator bounds of dataset: [xmin, ymin, xmax, ymax]
+func (d *Dataset) MercatorBounds() ([4]float64, error) {
+	return d.transformBounds("EPSG:3857")
+}
+
+// Project dataset bounds to CRS
+func (d *Dataset) transformBounds(crs string) ([4]float64, error) {
 	d.mustBeOpen()
 
 	var bounds [4]float64
@@ -86,14 +96,16 @@ func (d *Dataset) GeoBounds() ([4]float64, error) {
 
 	srcSRS := C.GDALGetSpatialRef(d.ptr)
 
-	wgs84 := C.CString("EPSG:4326")
-	defer C.free(unsafe.Pointer(wgs84))
+	targetSRSName := C.CString(crs)
+	defer C.free(unsafe.Pointer(targetSRSName))
 	targetSRS := C.OSRNewSpatialReference(nil)
 	defer C.OSRDestroySpatialReference(targetSRS)
-	C.OSRSetWellKnownGeogCS(targetSRS, wgs84)
+	C.OSRSetFromUserInput(targetSRS, targetSRSName)
 	if unsafe.Pointer(targetSRS) == nil {
 		return bounds, fmt.Errorf("could not set target SRS to WGS84")
 	}
+	// make sure that coords are always returned in long/lat order (otherwise EPSG:4326 returns in opposite order)
+	C.OSRSetAxisMappingStrategy(targetSRS, C.OAMS_TRADITIONAL_GIS_ORDER)
 
 	transform := C.OCTNewCoordinateTransformation(srcSRS, targetSRS)
 	if unsafe.Pointer(transform) == nil {
@@ -107,11 +119,10 @@ func (d *Dataset) GeoBounds() ([4]float64, error) {
 		C.double(b[1]),
 		C.double(b[2]),
 		C.double(b[3]),
-		// not sure why coordinate order is flipped, maybe due to going to WGS84?
-		(*C.double)(unsafe.Pointer(&bounds[1])),
 		(*C.double)(unsafe.Pointer(&bounds[0])),
-		(*C.double)(unsafe.Pointer(&bounds[3])),
+		(*C.double)(unsafe.Pointer(&bounds[1])),
 		(*C.double)(unsafe.Pointer(&bounds[2])),
+		(*C.double)(unsafe.Pointer(&bounds[3])),
 		21,
 	) == 0 {
 		return bounds, fmt.Errorf("error transforming bounds to WGS84 coordinates")
