@@ -7,7 +7,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/brendan-ward/rastertiler/gdal"
 	"github.com/brendan-ward/rastertiler/mbtiles"
@@ -119,44 +118,76 @@ func create(infilename string, outfilename string) error {
 		panic(err)
 	}
 
-	mercatorBounds, err := d.MercatorBounds()
-	if err != nil {
-		panic(err)
-	}
+	// mercatorBounds, err := d.MercatorBounds()
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	db.WriteMetadata(tilesetName, description, minzoom, maxzoom, geoBounds)
 
-	queue := make(chan *tiles.TileID)
-	var wg sync.WaitGroup
+	fmt.Println(d)
 
-	go produce(minzoom, maxzoom, mercatorBounds, queue)
-
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			con, err := db.GetConnection()
-			if err != nil {
-				panic(err)
-			}
-			defer db.CloseConnection(con)
-
-			// for tileID := range queue {
-			// 	tile, err := // TODO:
-			// 	if err != nil {
-			// 		panic(err)
-			// 	}
-
-			// 	if tile != nil {
-			// 		mbtiles.WriteTile(con, tileID, tile)
-			// 	}
-			// }
-
-		}()
+	// FIXME: remove
+	array, err := d.Read(0, 0, d.Width(), d.Height(), d.Width(), d.Height())
+	if err != nil {
+		panic(err)
 	}
+	// transform := [6]float64{-180, 1, 0, 90, 0, -1}
+	transform, _ := d.Transform()
+	nodata, _, _ := d.Nodata()
+	// data := make([]uint8, 4)
+	// for i := 0; i < 4; i++ {
+	// 	data[i] = byte(i)
+	// }
+	gdal.WriteGeoTIFF("/tmp/test.tif", array.Buffer, array.Width, array.Height, transform, d.CRS(), d.DType(), nodata)
 
-	wg.Wait()
+	// close dataset, no longer needed
+	d.Close()
+
+	// queue := make(chan *tiles.TileID)
+	// var wg sync.WaitGroup
+
+	// go produce(minzoom, maxzoom, mercatorBounds, queue)
+
+	// for i := 0; i < numWorkers; i++ {
+	// 	wg.Add(1)
+	// 	go func() {
+	// 		defer wg.Done()
+
+	// 		con, err := db.GetConnection()
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		defer db.CloseConnection(con)
+
+	// 		// get VRT once per goroutine
+	// 		ds, err := gdal.Open(infilename)
+	// 		defer ds.Close()
+
+	// 		vrt, err := ds.GetWarpedVRT("EPSG:3857")
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		defer vrt.Close()
+
+	// 		// gdal.WriteGeoTIFF("/tmp/test.tiff")
+
+	// 		// for tileID := range queue {
+	// 		// 	fmt.Println(tileID)
+	// 		// 	// 	tile, err := // TODO:
+	// 		// 	// 	if err != nil {
+	// 		// 	// 		panic(err)
+	// 		// 	// 	}
+
+	// 		// 	// 	if tile != nil {
+	// 		// 	// 		mbtiles.WriteTile(con, tileID, tile)
+	// 		// 	// 	}
+	// 		// }
+
+	// 	}()
+	// }
+
+	// wg.Wait()
 
 	return nil
 }

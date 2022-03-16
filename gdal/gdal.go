@@ -2,6 +2,7 @@ package gdal
 
 // #cgo LDFLAGS: -lgdal
 // #include "gdal.h"
+// #include "gdalwarper.h"
 // #include "ogr_srs_api.h"
 import "C"
 import (
@@ -9,12 +10,50 @@ import (
 	"unsafe"
 )
 
+type DType int
+
+// FIXME: remove, unused
+// const (
+// 	Byte    = DType(C.GDT_Byte)
+// 	UInt16  = DType(C.GDT_UInt16)
+// 	Int16   = DType(C.GDT_Int16)
+// 	UInt32  = DType(C.GDT_UInt32)
+// 	Int32   = DType(C.GDT_Int32)
+// 	Float32 = DType(C.GDT_Float32)
+// 	Float64 = DType(C.GDT_Float64)
+// )
+
+var DTypeStr = map[int]string{
+	C.GDT_Byte:   "uint8",
+	C.GDT_UInt16: "uint16",
+	C.GDT_Int16:  "int16",
+	C.GDT_UInt32: "uint32",
+	C.GDT_Int32:  "int32",
+}
+
+var GDALDType = map[string]int{
+	"byte":   C.GDT_Byte,
+	"uint8":  C.GDT_Byte,
+	"uint16": C.GDT_UInt16,
+	"uint32": C.GDT_UInt32,
+	"int8":   C.GDT_Byte, // Note: requires setting an option when creating dataset
+	"int16":  C.GDT_Int16,
+	"int32":  C.GDT_Int32,
+}
+
 type Dataset struct {
 	path string
 	ptr  C.GDALDatasetH
 }
 
-// type SpatialReference C.OGRSpatialReferenceH
+type Array struct {
+	DType  string
+	Width  int
+	Height int
+	Buffer interface{}
+}
+
+const RESAMPLING_NEAREST int = 0
 
 const Version string = C.GDAL_RELEASE_NAME
 
@@ -26,21 +65,23 @@ func Open(filename string) (*Dataset, error) {
 	cFilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cFilename))
 
-	dataset := C.GDALOpen(cFilename, C.GA_ReadOnly)
-	if dataset == nil {
+	ptr := C.GDALOpen(cFilename, C.GA_ReadOnly)
+	if ptr == nil {
 		return nil, fmt.Errorf("could not open dataset: %v", filename)
 
 	}
 	return &Dataset{
 		path: filename,
-		ptr:  dataset,
+		ptr:  ptr,
 	}, nil
 }
 
 func (d *Dataset) Close() {
-	if d != nil {
+	if d != nil && unsafe.Pointer(d.ptr) != nil {
 		C.GDALClose(d.ptr)
 	}
+	// clear out previous references
+	*d = Dataset{}
 }
 
 func (d *Dataset) mustBeOpen() {
@@ -158,15 +199,224 @@ func (d *Dataset) Transform() ([6]float64, error) {
 	return transform, nil
 }
 
+// Get nodata value (cast to int) for first band, boolean to indicate if a nodata value is set
+func (d *Dataset) Nodata() (int, bool, error) {
+	d.mustBeOpen()
+
+	// assume 1-band data
+	band := C.GDALGetRasterBand(d.ptr, 1)
+	if unsafe.Pointer(band) == nil {
+		return 0, false, fmt.Errorf("could not get raster band")
+	}
+
+	var hasNodata int
+	nodata := int(C.GDALGetRasterNoDataValue(band, (*C.int)(unsafe.Pointer(&hasNodata))))
+
+	return nodata, hasNodata != 0, nil
+}
+
+func (d *Dataset) CRS() string {
+	d.mustBeOpen()
+
+	return C.GoString(C.GDALGetProjectionRef(d.ptr))
+}
+
+func (d *Dataset) DType() string {
+	return DTypeStr[int(C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1)))]
+}
+
 func (d *Dataset) String() string {
 	if d == nil {
 		return ""
 	}
 
 	driver := C.GoString(C.GDALGetDriverShortName(C.GDALGetDatasetDriver(d.ptr)))
-	// crs := C.GoString(C.GDALGetProjectionRef(d.ptr))
+	dataType := d.DType()
+	nodata, hasNodata, _ := d.Nodata()
 	transform, _ := d.Transform()
 	bounds, _ := d.Bounds()
 	geoBounds, _ := d.GeoBounds()
-	return fmt.Sprintf("%v (%v): %v x %v pixels\ntransform: %v\nbounds: %v\ngeographic bounds: %v", d.path, driver, d.Width(), d.Height(), transform, bounds, geoBounds)
+	return fmt.Sprintf("%v (%v: %v, nodata: %v [set: %v])\ndimensions: %v x %v pixels\ntransform: %v\nbounds: %v\ngeographic bounds: %v", d.path, driver, dataType, nodata, hasNodata, d.Width(), d.Height(), transform, bounds, geoBounds)
+}
+
+func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
+	d.mustBeOpen()
+
+	targetSRSName := C.CString(crs)
+	defer C.free(unsafe.Pointer(targetSRSName))
+
+	vrt := C.GDALAutoCreateWarpedVRT(
+		d.ptr,
+		C.GDALGetProjectionRef(d.ptr),
+		targetSRSName,
+		C.GDALResampleAlg(RESAMPLING_NEAREST),
+		0,
+		nil,
+	)
+
+	if unsafe.Pointer(vrt) == nil {
+		return nil, fmt.Errorf("could not create WarpedVRT")
+	}
+
+	return &Dataset{
+		path: fmt.Sprintf("WarpedVRT (src: %v)", d.path),
+		ptr:  vrt,
+	}, nil
+}
+
+func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWidth int, bufferHeight int) (*Array, error) {
+	d.mustBeOpen()
+
+	gdalDataType := C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1))
+	dtype := DTypeStr[int(gdalDataType)]
+
+	var array *Array
+	// var buffer interface{}
+	var bufferPtr unsafe.Pointer
+	size := bufferWidth * bufferHeight
+
+	switch dtype {
+	case "uint8":
+		uint8Buffer := make([]uint8, size)
+		array = &Array{
+			DType:  dtype,
+			Width:  bufferWidth,
+			Height: bufferHeight,
+			Buffer: uint8Buffer,
+		}
+		// buffer = uint8Buffer
+		bufferPtr = unsafe.Pointer(&uint8Buffer[0])
+	}
+
+	if C.GDALDatasetRasterIO(
+		d.ptr,
+		C.GF_Read,
+		C.int(offsetX),
+		C.int(offsetY),
+		C.int(width),
+		C.int(height),
+		bufferPtr,
+		C.int(bufferWidth), // TODO: can this be same as width and height when reading boundless?
+		C.int(bufferHeight),
+		gdalDataType,
+		C.int(1), // number of bands being written
+		nil,      // default to selecting first band for writing
+		0,        // pixel spacing (same as underlying data type)
+		0,        // line spacing (default)
+		0,        // band spacing (default)
+	) != C.CE_None {
+		return nil, fmt.Errorf("could not read data")
+	}
+
+	return array, nil
+}
+
+func WriteGeoTIFF(filename string, data interface{}, width int, height int, transform [6]float64, crs string, dtype string, nodata int) error {
+
+	isSignedByte := false
+	// use type assertion switch to get data as indexable type
+	var bufferPtr unsafe.Pointer
+	switch bufferType := data.(type) {
+	case []int8:
+		isSignedByte = true
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []uint8:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []uint16:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []uint32:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []int16:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []int32:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	}
+
+	driverName := C.CString("GTiff")
+	defer C.free(unsafe.Pointer(driverName))
+
+	cFilename := C.CString(filename)
+	defer C.free(unsafe.Pointer(cFilename))
+
+	dataType := C.GDALDataType(GDALDType[dtype])
+
+	// set sensible default options
+	options := []string{
+		"TILED=YES",
+		"BLOCKXSIZE=256",
+		"BLOCKYSIZE=256",
+		"COMPRESS=lzw",
+	}
+	if isSignedByte {
+		options = append(options, "PIXELTYPE=SIGNEDBYTE")
+	}
+
+	// create a null-terminated C string array
+	length := len(options)
+	gdalOpts := make([]*C.char, length+1)
+	for i := 0; i < len(options); i++ {
+		gdalOpts[i] = C.CString(options[i])
+		defer C.free(unsafe.Pointer(gdalOpts[i]))
+	}
+	gdalOpts[length] = (*C.char)(unsafe.Pointer(nil))
+
+	ptr := C.GDALCreate(
+		C.GDALGetDriverByName(driverName),
+		cFilename,
+		C.int(width),
+		C.int(height),
+		1, // number of bands
+		dataType,
+		(**C.char)(unsafe.Pointer(&gdalOpts[0])),
+	)
+	if unsafe.Pointer(ptr) == nil {
+		return fmt.Errorf("could not open dataset for writing: %v", filename)
+	}
+
+	band := C.GDALGetRasterBand(ptr, 1)
+	if unsafe.Pointer(band) == nil {
+		return fmt.Errorf("could not get raster band")
+	}
+
+	outCRS := C.CString(crs)
+	defer C.free(unsafe.Pointer(outCRS))
+	if C.GDALSetProjection(ptr, outCRS) != C.CE_None {
+		return fmt.Errorf("could not set CRS")
+	}
+
+	if C.GDALSetGeoTransform(
+		ptr,
+		(*C.double)(unsafe.Pointer(&transform[0])),
+	) != C.CE_None {
+		return fmt.Errorf("could not set transform")
+	}
+
+	if C.GDALSetRasterNoDataValue(band, C.double(nodata)) != C.CE_None {
+		return fmt.Errorf("could not set NODATA")
+	}
+
+	// write data to band
+	if C.GDALDatasetRasterIO(
+		ptr,
+		C.GF_Write,
+		C.int(0),
+		C.int(0),
+		C.int(width),
+		C.int(height),
+		bufferPtr,
+		C.int(width),
+		C.int(height),
+		dataType,
+		C.int(1), // number of bands being written
+		nil,      // default to selecting first band for writing
+		0,        // pixel spacing
+		0,        // line spacing
+		0,        // band spacing
+	) != C.CE_None {
+		return fmt.Errorf("could not write data")
+	}
+
+	C.GDALClose(ptr)
+
+	return nil
 }
