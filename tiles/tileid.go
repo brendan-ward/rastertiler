@@ -92,27 +92,25 @@ func (t *TileID) String() string {
 	return fmt.Sprintf("Tile(zoom: %v, x: %v, y:%v)", t.Zoom, t.X, t.Y)
 }
 
-func (t *TileID) GeoBounds() (float64, float64, float64, float64) {
+func (t *TileID) GeoBounds() (bounds [4]float64) {
 	z2 := 1 << t.Zoom
 	zoomFactor := (float64)(z2)
 	x := (float64)(t.X)
 	y := (float64)(t.Y)
 
-	xmin := x/zoomFactor*360.0 - 180.0
-	ymin := math.Atan(math.Sinh(math.Pi*(1.0-2.0*((y+1.0)/zoomFactor)))) * (180.0 / math.Pi)
-	xmax := (x+1.0)/zoomFactor*360.0 - 180.0
-	ymax := math.Atan(math.Sinh(math.Pi*(1.0-2.0*y/zoomFactor))) * (180.0 / math.Pi)
-
-	return xmin, ymin, xmax, ymax
+	bounds[0] = x/zoomFactor*360.0 - 180.0
+	bounds[1] = math.Atan(math.Sinh(math.Pi*(1.0-2.0*((y+1.0)/zoomFactor)))) * (180.0 / math.Pi)
+	bounds[2] = (x+1.0)/zoomFactor*360.0 - 180.0
+	bounds[3] = math.Atan(math.Sinh(math.Pi*(1.0-2.0*y/zoomFactor))) * (180.0 / math.Pi)
+	return bounds
 }
 
-func (t *TileID) MercatorBounds() (float64, float64, float64, float64) {
+func (t *TileID) MercatorBounds() (bounds [4]float64) {
 	z2 := 1 << t.Zoom
 	tileSize := CE / (float64)(z2)
-	xmin := (float64)(t.X)*tileSize - CE/2.0
-	xmax := xmin + tileSize
-	ymax := CE/2 - (float64)(t.Y)*tileSize
-	ymin := ymax - tileSize
-
-	return xmin, ymin, xmax, ymax
+	bounds[0] = (float64)(t.X)*tileSize - CE/2.0
+	bounds[2] = bounds[0] + tileSize
+	bounds[3] = CE/2 - (float64)(t.Y)*tileSize
+	bounds[1] = bounds[3] - tileSize
+	return bounds
 }

@@ -8,20 +8,9 @@ import "C"
 import (
 	"fmt"
 	"unsafe"
+
+	"github.com/brendan-ward/rastertiler/affine"
 )
-
-type DType int
-
-// FIXME: remove, unused
-// const (
-// 	Byte    = DType(C.GDT_Byte)
-// 	UInt16  = DType(C.GDT_UInt16)
-// 	Int16   = DType(C.GDT_Int16)
-// 	UInt32  = DType(C.GDT_UInt32)
-// 	Int32   = DType(C.GDT_Int32)
-// 	Float32 = DType(C.GDT_Float32)
-// 	Float64 = DType(C.GDT_Float64)
-// )
 
 var DTypeStr = map[int]string{
 	C.GDT_Byte:   "uint8",
@@ -101,15 +90,16 @@ func (d *Dataset) Bounds() ([4]float64, error) {
 		return bounds, err
 	}
 
-	// raster is anchored in upper left; this is the standard direction
-	if transform[5] < 0 {
-		bounds[0] = transform[0]
-		bounds[1] = transform[3] + transform[5]*float64(d.Height())
-		bounds[2] = transform[0] + transform[1]*float64(d.Width())
-		bounds[3] = transform[3]
-	} else {
+	if transform.D > 0 {
 		panic("rasters anchored from bottom left not yet supported")
 	}
+
+	// raster is anchored in upper left; this is the standard direction
+
+	bounds[0] = transform.C
+	bounds[1] = transform.F + transform.E*float64(d.Height())
+	bounds[2] = transform.C + transform.A*float64(d.Width())
+	bounds[3] = transform.F
 
 	return bounds, nil
 }
@@ -184,19 +174,19 @@ func (d *Dataset) Width() int {
 	return int(C.GDALGetRasterXSize(d.ptr))
 }
 
-// Get 6-part geo transform array of dataset
-func (d *Dataset) Transform() ([6]float64, error) {
+// Return an Affine tranform object
+func (d *Dataset) Transform() (*affine.Affine, error) {
 	d.mustBeOpen()
 
 	var transform [6]float64
 
 	if d == nil {
-		return transform, nil
+		return nil, nil
 	}
 	if (C.GDALGetGeoTransform(d.ptr, (*C.double)(unsafe.Pointer(&transform[0])))) != C.CE_None {
-		return transform, fmt.Errorf("could not get transform for: %v", d.path)
+		return nil, fmt.Errorf("could not get transform for: %v", d.path)
 	}
-	return transform, nil
+	return affine.FromGDAL(transform), nil
 }
 
 // Get nodata value (cast to int) for first band, boolean to indicate if a nodata value is set
@@ -222,7 +212,20 @@ func (d *Dataset) CRS() string {
 }
 
 func (d *Dataset) DType() string {
+	d.mustBeOpen()
+
 	return DTypeStr[int(C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1)))]
+}
+
+func (d *Dataset) Window(bounds [4]float64) (*Window, error) {
+	d.mustBeOpen()
+
+	transform, err := d.Transform()
+	if err != nil {
+		return nil, err
+	}
+
+	return WindowFromBounds(transform, bounds), nil
 }
 
 func (d *Dataset) String() string {
@@ -236,7 +239,7 @@ func (d *Dataset) String() string {
 	transform, _ := d.Transform()
 	bounds, _ := d.Bounds()
 	geoBounds, _ := d.GeoBounds()
-	return fmt.Sprintf("%v (%v: %v, nodata: %v [set: %v])\ndimensions: %v x %v pixels\ntransform: %v\nbounds: %v\ngeographic bounds: %v", d.path, driver, dataType, nodata, hasNodata, d.Width(), d.Height(), transform, bounds, geoBounds)
+	return fmt.Sprintf("%v (%v: %v, nodata: %v [set: %v])\ndimensions: %v x %v pixels\ntransform:\n%v\nbounds: %v\ngeographic bounds: %v", d.path, driver, dataType, nodata, hasNodata, d.Width(), d.Height(), transform, bounds, geoBounds)
 }
 
 func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
@@ -311,7 +314,7 @@ func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWi
 	return array, nil
 }
 
-func WriteGeoTIFF(filename string, data interface{}, width int, height int, transform [6]float64, crs string, dtype string, nodata int) error {
+func WriteGeoTIFF(filename string, data interface{}, width int, height int, transform *affine.Affine, crs string, dtype string, nodata int) error {
 
 	isSignedByte := false
 	// use type assertion switch to get data as indexable type
@@ -384,9 +387,10 @@ func WriteGeoTIFF(filename string, data interface{}, width int, height int, tran
 		return fmt.Errorf("could not set CRS")
 	}
 
+	gdalTransform := transform.ToGDAL()
 	if C.GDALSetGeoTransform(
 		ptr,
-		(*C.double)(unsafe.Pointer(&transform[0])),
+		(*C.double)(unsafe.Pointer(&gdalTransform[0])),
 	) != C.CE_None {
 		return fmt.Errorf("could not set transform")
 	}
