@@ -14,7 +14,11 @@ type Window struct {
 	Height  float64
 }
 
-// Calculate Window based on transform and bounds
+func (w *Window) String() string {
+	return fmt.Sprintf("Window(xoff: %v, yoff: %v, width: %v, height: %v)", w.XOffset, w.YOffset, w.Width, w.Height)
+}
+
+// Calculate Window based on Affine transform and bounds
 func WindowFromBounds(transform *affine.Affine, bounds [4]float64) *Window {
 	invTransform := transform.Invert()
 
@@ -59,8 +63,6 @@ func WindowFromBounds(transform *affine.Affine, bounds [4]float64) *Window {
 		}
 	}
 
-	fmt.Printf("xmin: %v, ymin: %v, xmax: %v, ymax: %v\n", xmin, ymin, xmax, ymax)
-
 	return &Window{
 		XOffset: xmin,
 		YOffset: ymin,
@@ -69,6 +71,17 @@ func WindowFromBounds(transform *affine.Affine, bounds [4]float64) *Window {
 	}
 }
 
-func (w *Window) String() string {
-	return fmt.Sprintf("Window(xoff: %v, yoff: %v, width: %v, height: %v)", w.XOffset, w.YOffset, w.Width, w.Height)
+// Calculate the Affine transform representing the relative window
+// within the passed-in Affine transform
+func WindowTransform(window *Window, transform *affine.Affine) *affine.Affine {
+	x, y := transform.Multiply(window.XOffset, window.YOffset)
+
+	return &affine.Affine{
+		A: transform.A,
+		B: transform.B,
+		C: x,
+		D: transform.D,
+		E: transform.E,
+		F: y,
+	}
 }

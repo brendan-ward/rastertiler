@@ -1,6 +1,9 @@
 package affine
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // Affine data structure
 // This is the same as Affine Python package used in rasterio
@@ -75,4 +78,9 @@ func (a *Affine) Scale(x float64, y float64) *Affine {
 
 func (a *Affine) String() string {
 	return fmt.Sprintf("Affine(%v, %v, %v,\n       %v, %v, %v)", a.A, a.B, a.C, a.D, a.E, a.F)
+}
+
+// Return the x, y resolution of the Affine transform
+func (a *Affine) Resolution() (float64, float64) {
+	return math.Abs(a.A), math.Abs(a.E)
 }

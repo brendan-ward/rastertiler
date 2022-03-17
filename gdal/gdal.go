@@ -35,13 +35,6 @@ type Dataset struct {
 	ptr  C.GDALDatasetH
 }
 
-type Array struct {
-	DType  string
-	Width  int
-	Height int
-	Buffer interface{}
-}
-
 const RESAMPLING_NEAREST int = 0
 
 const Version string = C.GDAL_RELEASE_NAME
@@ -228,6 +221,17 @@ func (d *Dataset) Window(bounds [4]float64) (*Window, error) {
 	return WindowFromBounds(transform, bounds), nil
 }
 
+func (d *Dataset) WindowTransform(window *Window) (*affine.Affine, error) {
+	d.mustBeOpen()
+
+	transform, err := d.Transform()
+	if err != nil {
+		return nil, err
+	}
+
+	return WindowTransform(window, transform), nil
+}
+
 func (d *Dataset) String() string {
 	if d == nil {
 		return ""
@@ -279,16 +283,18 @@ func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWi
 	size := bufferWidth * bufferHeight
 
 	switch dtype {
+	// TODO: other data types
 	case "uint8":
 		uint8Buffer := make([]uint8, size)
 		array = &Array{
 			DType:  dtype,
 			Width:  bufferWidth,
 			Height: bufferHeight,
-			Buffer: uint8Buffer,
+			buffer: uint8Buffer,
 		}
-		// buffer = uint8Buffer
 		bufferPtr = unsafe.Pointer(&uint8Buffer[0])
+	default:
+		panic("Other dtypes not yet supported for reading")
 	}
 
 	if C.GDALDatasetRasterIO(
