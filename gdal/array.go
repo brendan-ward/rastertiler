@@ -92,10 +92,12 @@ func (left *Array) Equals(right *Array) bool {
 	}
 }
 
+// Get value at row, col position
 func (a *Array) Get(row int, col int) interface{} {
 	return a.buffer.([]interface{})[row*a.Width+col]
 }
 
+// Set value into row, col position
 func (a *Array) Set(row int, col int, value interface{}) {
 	switch buffer := a.buffer.(type) {
 	case []uint8:
@@ -130,27 +132,27 @@ func NewArray(width int, height int, dtype string, fillValue interface{}) *Array
 	}
 }
 
-func (target *Array) Paste(source *Array, offsetX int, offsetY int) error {
+func (target *Array) Paste(source *Array, rowOffset int, colOffset int) error {
 	if source.DType != target.DType {
 		return fmt.Errorf("data types do not match")
 	}
 
 	// TODO:  make sure that source will fit into target
-	if offsetX < 0 || offsetY < 0 {
+	if rowOffset < 0 || colOffset < 0 {
 		return fmt.Errorf("offsets must be >= 0")
 	}
 
-	if offsetX+source.Width > target.Width || offsetY+source.Height > target.Height {
+	if rowOffset+source.Height > target.Height || rowOffset+source.Width > target.Width {
 		return fmt.Errorf("size of array to paste is too big for target array, given offsets")
 	}
 
 	var i int
 	var srcIndex int
-	for row := offsetY; row < offsetY+source.Height; row++ {
-		for col := offsetX; col < offsetX+source.Width; col++ {
+	for row := rowOffset; row < rowOffset+source.Height; row++ {
+		for col := colOffset; col < colOffset+source.Width; col++ {
 			// TODO: verify indexing
 			i = row*target.Width + col
-			srcIndex = (row-offsetY)*source.Width + (col - offsetX)
+			srcIndex = (row-rowOffset)*source.Width + (col - colOffset)
 			switch target.DType {
 			case "uint8":
 				target.buffer.([]uint8)[i] = source.buffer.([]uint8)[srcIndex]

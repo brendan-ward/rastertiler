@@ -7,12 +7,19 @@ package gdal
 import "C"
 import (
 	"fmt"
+	"math"
 	"unsafe"
 
 	"github.com/brendan-ward/rastertiler/affine"
+	"github.com/brendan-ward/rastertiler/tiles"
 )
 
-var DTypeStr = map[int]string{
+const Version string = C.GDAL_RELEASE_NAME
+
+const RESAMPLING_NEAREST int = 0
+
+// mapping of GDAL
+var gdalDtypeStr = map[int]string{
 	C.GDT_Byte:   "uint8",
 	C.GDT_UInt16: "uint16",
 	C.GDT_Int16:  "int16",
@@ -20,7 +27,7 @@ var DTypeStr = map[int]string{
 	C.GDT_Int32:  "int32",
 }
 
-var GDALDType = map[string]int{
+var gdalDtype = map[string]int{
 	"byte":   C.GDT_Byte,
 	"uint8":  C.GDT_Byte,
 	"uint16": C.GDT_UInt16,
@@ -30,17 +37,87 @@ var GDALDType = map[string]int{
 	"int32":  C.GDT_Int32,
 }
 
-type Dataset struct {
-	path string
-	ptr  C.GDALDatasetH
-}
-
-const RESAMPLING_NEAREST int = 0
-
-const Version string = C.GDAL_RELEASE_NAME
-
 func init() {
 	C.GDALAllRegister()
+}
+
+type Dataset struct {
+	path      string
+	ptr       C.GDALDatasetH
+	driver    string
+	dtype     string
+	crs       string
+	transform *affine.Affine
+	width     int
+	height    int
+	nodata    interface{} // value is in dtype
+	bounds    [4]float64
+}
+
+func newDataset(filename string, ptr C.GDALDatasetH) (*Dataset, error) {
+	// assume 1-band data
+	band := C.GDALGetRasterBand(ptr, 1)
+	if unsafe.Pointer(band) == nil {
+		return nil, fmt.Errorf("could not get raster band")
+	}
+
+	driver := C.GoString(C.GDALGetDriverShortName(C.GDALGetDatasetDriver(ptr)))
+	crs := C.GoString(C.GDALGetProjectionRef(ptr))
+	dtype := gdalDtypeStr[int(C.GDALGetRasterDataType(C.GDALGetRasterBand(ptr, 1)))]
+	width := int(C.GDALGetRasterXSize(ptr))
+	height := int(C.GDALGetRasterYSize(ptr))
+
+	var rawTransform [6]float64
+	if (C.GDALGetGeoTransform(ptr, (*C.double)(unsafe.Pointer(&rawTransform[0])))) != C.CE_None {
+		return nil, fmt.Errorf("could not read transform")
+	}
+	transform := affine.FromGDAL(rawTransform)
+
+	// var hasNodata int
+	// rawNodata := int(C.GDALGetRasterNoDataValue(band, (*C.int)(unsafe.Pointer(&hasNodata))))
+	rawNodata := int(C.GDALGetRasterNoDataValue(band, nil))
+	var nodata interface{}
+
+	switch dtype {
+	case "int8":
+		nodata = int8(rawNodata)
+	case "uint8":
+		nodata = uint8(rawNodata)
+	case "int16":
+		nodata = int16(rawNodata)
+	case "uint16":
+		nodata = uint16(rawNodata)
+	case "int32":
+		nodata = int32(rawNodata)
+	case "uint32":
+		nodata = uint32(rawNodata)
+	default:
+		panic("Nodata() not yet supported for other dtypes")
+	}
+
+	if transform.D > 0 {
+		panic("rasters anchored from bottom left not yet supported")
+	}
+
+	// raster is anchored in upper left; this is the standard direction
+	var bounds [4]float64
+	bounds[0] = transform.C
+	bounds[1] = transform.F + transform.E*float64(height)
+	bounds[2] = transform.C + transform.A*float64(width)
+	bounds[3] = transform.F
+
+	return &Dataset{
+		path:      filename,
+		ptr:       ptr,
+		driver:    driver,
+		crs:       crs,
+		transform: transform,
+		width:     width,
+		height:    height,
+		dtype:     dtype,
+		nodata:    nodata,
+		bounds:    bounds,
+	}, nil
 }
 
 func Open(filename string) (*Dataset, error) {
@@ -50,12 +127,9 @@ func Open(filename string) (*Dataset, error) {
 	ptr := C.GDALOpen(cFilename, C.GA_ReadOnly)
 	if ptr == nil {
 		return nil, fmt.Errorf("could not open dataset: %v", filename)
-
 	}
-	return &Dataset{
-		path: filename,
-		ptr:  ptr,
-	}, nil
+
+	return newDataset(filename, ptr)
 }
 
 func (d *Dataset) Close() {
@@ -73,28 +147,10 @@ func (d *Dataset) mustBeOpen() {
 }
 
 // Get bounds of dataset: [xmin, ymin, xmax, ymax]
-func (d *Dataset) Bounds() ([4]float64, error) {
+func (d *Dataset) Bounds() [4]float64 {
 	d.mustBeOpen()
 
-	var bounds [4]float64
-
-	transform, err := d.Transform()
-	if err != nil {
-		return bounds, err
-	}
-
-	if transform.D > 0 {
-		panic("rasters anchored from bottom left not yet supported")
-	}
-
-	// raster is anchored in upper left; this is the standard direction
-
-	bounds[0] = transform.C
-	bounds[1] = transform.F + transform.E*float64(d.Height())
-	bounds[2] = transform.C + transform.A*float64(d.Width())
-	bounds[3] = transform.F
-
-	return bounds, nil
+	return d.bounds
 }
 
 // Get geographic bounds of dataset: [xmin, ymin, xmax, ymax]
@@ -112,11 +168,6 @@ func (d *Dataset) transformBounds(crs string) ([4]float64, error) {
 	d.mustBeOpen()
 
 	var bounds [4]float64
-
-	b, err := d.Bounds()
-	if err != nil {
-		return bounds, err
-	}
 
 	srcSRS := C.GDALGetSpatialRef(d.ptr)
 
@@ -139,10 +190,10 @@ func (d *Dataset) transformBounds(crs string) ([4]float64, error) {
 
 	if C.OCTTransformBounds(
 		transform,
-		C.double(b[0]),
-		C.double(b[1]),
-		C.double(b[2]),
-		C.double(b[3]),
+		C.double(d.bounds[0]),
+		C.double(d.bounds[1]),
+		C.double(d.bounds[2]),
+		C.double(d.bounds[3]),
 		(*C.double)(unsafe.Pointer(&bounds[0])),
 		(*C.double)(unsafe.Pointer(&bounds[1])),
 		(*C.double)(unsafe.Pointer(&bounds[2])),
@@ -158,78 +209,50 @@ func (d *Dataset) transformBounds(crs string) ([4]float64, error) {
 // Get the height of the dataset, in number of pixels
 func (d *Dataset) Height() int {
 	d.mustBeOpen()
-	return int(C.GDALGetRasterYSize(d.ptr))
+
+	return d.height
 }
 
 // Get the width of the dataset, in number of pixels
 func (d *Dataset) Width() int {
 	d.mustBeOpen()
-	return int(C.GDALGetRasterXSize(d.ptr))
+
+	return d.width
 }
 
 // Return an Affine tranform object
-func (d *Dataset) Transform() (*affine.Affine, error) {
+func (d *Dataset) Transform() *affine.Affine {
 	d.mustBeOpen()
 
-	var transform [6]float64
-
-	if d == nil {
-		return nil, nil
-	}
-	if (C.GDALGetGeoTransform(d.ptr, (*C.double)(unsafe.Pointer(&transform[0])))) != C.CE_None {
-		return nil, fmt.Errorf("could not get transform for: %v", d.path)
-	}
-	return affine.FromGDAL(transform), nil
+	return d.transform
 }
 
-// Get nodata value (cast to int) for first band, boolean to indicate if a nodata value is set
-func (d *Dataset) Nodata() (int, bool, error) {
+func (d *Dataset) Nodata() interface{} {
 	d.mustBeOpen()
 
-	// assume 1-band data
-	band := C.GDALGetRasterBand(d.ptr, 1)
-	if unsafe.Pointer(band) == nil {
-		return 0, false, fmt.Errorf("could not get raster band")
-	}
-
-	var hasNodata int
-	nodata := int(C.GDALGetRasterNoDataValue(band, (*C.int)(unsafe.Pointer(&hasNodata))))
-
-	return nodata, hasNodata != 0, nil
+	return d.nodata
 }
 
 func (d *Dataset) CRS() string {
 	d.mustBeOpen()
 
-	return C.GoString(C.GDALGetProjectionRef(d.ptr))
+	return d.crs
 }
 
 func (d *Dataset) DType() string {
-	d.mustBeOpen()
-
-	return DTypeStr[int(C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1)))]
+	return d.dtype
 }
 
-func (d *Dataset) Window(bounds [4]float64) (*Window, error) {
+func (d *Dataset) Window(bounds [4]float64) *Window {
 	d.mustBeOpen()
 
-	transform, err := d.Transform()
-	if err != nil {
-		return nil, err
-	}
-
-	return WindowFromBounds(transform, bounds), nil
+	return WindowFromBounds(d.transform, bounds)
 }
 
-func (d *Dataset) WindowTransform(window *Window) (*affine.Affine, error) {
+func (d *Dataset) WindowTransform(window *Window) *affine.Affine {
 	d.mustBeOpen()
 
-	transform, err := d.Transform()
-	if err != nil {
-		return nil, err
-	}
-
-	return WindowTransform(window, transform), nil
+	return WindowTransform(window, d.transform)
 }
 
 func (d *Dataset) String() string {
@@ -237,13 +260,8 @@ func (d *Dataset) String() string {
 		return ""
 	}
 
-	driver := C.GoString(C.GDALGetDriverShortName(C.GDALGetDatasetDriver(d.ptr)))
-	dataType := d.DType()
-	nodata, hasNodata, _ := d.Nodata()
-	transform, _ := d.Transform()
-	bounds, _ := d.Bounds()
 	geoBounds, _ := d.GeoBounds()
-	return fmt.Sprintf("%v (%v: %v, nodata: %v [set: %v])\ndimensions: %v x %v pixels\ntransform:\n%v\nbounds: %v\ngeographic bounds: %v", d.path, driver, dataType, nodata, hasNodata, d.Width(), d.Height(), transform, bounds, geoBounds)
+	return fmt.Sprintf("%v (%v: %v, nodata: %v)\ndimensions: %v x %v pixels\ntransform:\n%v\nbounds: %v\ngeographic bounds: %v", d.path, d.driver, d.dtype, d.nodata, d.Width(), d.Height(), d.transform, d.bounds, geoBounds)
 }
 
 func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
@@ -252,7 +270,7 @@ func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
 	targetSRSName := C.CString(crs)
 	defer C.free(unsafe.Pointer(targetSRSName))
 
-	vrt := C.GDALAutoCreateWarpedVRT(
+	ptr := C.GDALAutoCreateWarpedVRT(
 		d.ptr,
 		C.GDALGetProjectionRef(d.ptr),
 		targetSRSName,
@@ -261,21 +279,18 @@ func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
 		nil,
 	)
 
-	if unsafe.Pointer(vrt) == nil {
+	if unsafe.Pointer(ptr) == nil {
 		return nil, fmt.Errorf("could not create WarpedVRT")
 	}
 
-	return &Dataset{
-		path: fmt.Sprintf("WarpedVRT (src: %v)", d.path),
-		ptr:  vrt,
-	}, nil
+	return newDataset(fmt.Sprintf("WarpedVRT (src: %v)", d.path), ptr)
 }
 
 func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWidth int, bufferHeight int) (*Array, error) {
 	d.mustBeOpen()
 
 	gdalDataType := C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1))
-	dtype := DTypeStr[int(gdalDataType)]
+	dtype := gdalDtypeStr[int(gdalDataType)]
 
 	var array *Array
 	// var buffer interface{}
@@ -305,7 +320,7 @@ func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWi
 		C.int(width),
 		C.int(height),
 		bufferPtr,
-		C.int(bufferWidth), // TODO: can this be same as width and height when reading boundless?
+		C.int(bufferWidth),
 		C.int(bufferHeight),
 		gdalDataType,
 		C.int(1), // number of bands being written
@@ -320,24 +335,77 @@ func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWi
 	return array, nil
 }
 
-func WriteGeoTIFF(filename string, data interface{}, width int, height int, transform *affine.Affine, crs string, dtype string, nodata int) error {
+// Read a tile of data from a Mercator-projection VRT or dataset
+func (d *Dataset) ReadTile(tileID *tiles.TileID, tileSize int) (*Array, *affine.Affine, error) {
+	size := float64(tileSize)
+	vrtWidth := float64(d.width)
+	vrtHeight := float64(d.height)
+
+	tileBounds := tileID.MercatorBounds()
+	window := d.Window(tileBounds)
+	tileTransform := d.WindowTransform(window)
+
+	// scale transform for tile
+	tileTransform = tileTransform.Scale(window.Width/size, window.Height/size)
+
+	xres, yres := tileTransform.Resolution()
+	leftOffset := math.Max(math.Round((d.bounds[0]-tileBounds[0])/xres), 0)
+	rightOffset := math.Max(math.Round((tileBounds[2]-d.bounds[2])/xres), 0)
+	bottomOffset := math.Max(math.Round((d.bounds[1]-tileBounds[1])/yres), 0)
+	topOffset := math.Max(math.Round((tileBounds[3]-d.bounds[3])/yres), 0)
+	width := int(size - leftOffset - rightOffset)
+	height := int(size - topOffset - bottomOffset)
+
+	// crop the window to the available pixels and convert to integer values
+	xStart := math.Round(math.Min(math.Max(window.XOffset, 0), vrtWidth))
+	yStart := math.Round(math.Min(math.Max(window.YOffset, 0), vrtHeight))
+	xStop := math.Max(math.Min(window.XOffset+window.Width, vrtWidth), 0)
+	yStop := math.Max(math.Min(window.YOffset+window.Height, vrtHeight), 0)
+	readWidth := int(math.Floor((xStop - xStart) + 0.5))
+	readHeight := int(math.Floor((yStop - yStart) + 0.5))
+
+	if readWidth <= 0 || readHeight <= 0 {
+		// no tile available
+		return nil, nil, nil
+	}
+
+	data, err := d.Read(int(xStart), int(yStart), readWidth, readHeight, width, height)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if data.EqualsValue(d.nodata) {
+		// empty tile
+		return nil, nil, nil
+	}
+
+	if width != tileSize || height != tileSize {
+		out := NewArray(tileSize, tileSize, data.DType, d.nodata)
+		out.Paste(data, int(topOffset), int(leftOffset))
+		data = out
+	}
+
+	return data, tileTransform, nil
+}
+
+func WriteGeoTIFF(filename string, data *Array, transform *affine.Affine, crs string, nodata interface{}) error {
 
 	isSignedByte := false
 	// use type assertion switch to get data as indexable type
 	var bufferPtr unsafe.Pointer
-	switch bufferType := data.(type) {
+	switch bufferType := data.buffer.(type) {
 	case []int8:
 		isSignedByte = true
 		bufferPtr = unsafe.Pointer(&bufferType[0])
 	case []uint8:
 		bufferPtr = unsafe.Pointer(&bufferType[0])
-	case []uint16:
-		bufferPtr = unsafe.Pointer(&bufferType[0])
-	case []uint32:
-		bufferPtr = unsafe.Pointer(&bufferType[0])
 	case []int16:
 		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []uint16:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
 	case []int32:
+		bufferPtr = unsafe.Pointer(&bufferType[0])
+	case []uint32:
 		bufferPtr = unsafe.Pointer(&bufferType[0])
 	}
 
@@ -347,7 +415,7 @@ func WriteGeoTIFF(filename string, data interface{}, width int, height int, tran
 	cFilename := C.CString(filename)
 	defer C.free(unsafe.Pointer(cFilename))
 
-	dataType := C.GDALDataType(GDALDType[dtype])
+	dataType := C.GDALDataType(gdalDtype[data.DType])
 
 	// set sensible default options
 	options := []string{
@@ -372,8 +440,8 @@ func WriteGeoTIFF(filename string, data interface{}, width int, height int, tran
 	ptr := C.GDALCreate(
 		C.GDALGetDriverByName(driverName),
 		cFilename,
-		C.int(width),
-		C.int(height),
+		C.int(data.Width),
+		C.int(data.Height),
 		1, // number of bands
 		dataType,
 		(**C.char)(unsafe.Pointer(&gdalOpts[0])),
@@ -401,7 +469,23 @@ func WriteGeoTIFF(filename string, data interface{}, width int, height int, tran
 		return fmt.Errorf("could not set transform")
 	}
 
-	if C.GDALSetRasterNoDataValue(band, C.double(nodata)) != C.CE_None {
+	var cNodata C.double
+	switch typedNodata := nodata.(type) {
+	case int8:
+		cNodata = C.double(typedNodata)
+	case uint8:
+		cNodata = C.double(typedNodata)
+	case int16:
+		cNodata = C.double(typedNodata)
+	case uint16:
+		cNodata = C.double(typedNodata)
+	case int32:
+		cNodata = C.double(typedNodata)
+	case uint32:
+		cNodata = C.double(typedNodata)
+	}
+
+	if C.GDALSetRasterNoDataValue(band, cNodata) != C.CE_None {
 		return fmt.Errorf("could not set NODATA")
 	}
 
@@ -411,11 +495,11 @@ func WriteGeoTIFF(filename string, data interface{}, width int, height int, tran
 		C.GF_Write,
 		C.int(0),
 		C.int(0),
-		C.int(width),
-		C.int(height),
+		C.int(data.Width),
+		C.int(data.Height),
 		bufferPtr,
-		C.int(width),
-		C.int(height),
+		C.int(data.Width),
+		C.int(data.Height),
 		dataType,
 		C.int(1), // number of bands being written
 		nil,      // default to selecting first band for writing

@@ -3,7 +3,6 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,7 +20,7 @@ var maxzoom uint8
 var tilesetName string
 var description string
 var numWorkers int
-var tileSize uint16
+var tileSize int
 
 var createCmd = &cobra.Command{
 	Use:   "create [IN.feather] [OUT.mbtiles]",
@@ -64,7 +63,7 @@ var createCmd = &cobra.Command{
 func init() {
 	createCmd.Flags().Uint8VarP(&minzoom, "minzoom", "Z", 0, "minimum zoom level")
 	createCmd.Flags().Uint8VarP(&maxzoom, "maxzoom", "z", 0, "maximum zoom level")
-	createCmd.Flags().Uint16VarP(&tileSize, "tilesize", "s", 256, "tile size in pixels")
+	createCmd.Flags().IntVarP(&tileSize, "tilesize", "s", 256, "tile size in pixels")
 	createCmd.Flags().StringVarP(&tilesetName, "name", "n", "", "tileset name")
 	createCmd.Flags().StringVar(&description, "description", "", "tileset description")
 	createCmd.Flags().IntVarP(&numWorkers, "workers", "w", 4, "number of workers to create tiles")
@@ -128,123 +127,25 @@ func create(infilename string, outfilename string) error {
 
 	db.WriteMetadata(tilesetName, description, minzoom, maxzoom, geoBounds)
 
-	// fmt.Println(d)
-
-	//////////////////
-	// FIXME: remove
-	// array, err := d.Read(0, 0, d.Width(), d.Height(), d.Width(), d.Height())
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// transform, _ := d.Transform()
-	// nodata, _, _ := d.Nodata()
-	// gdal.WriteGeoTIFF("/tmp/test.tif", array.Buffer, array.Width, array.Height, transform, d.CRS(), d.DType(), nodata)
-	//////////////////////
-
 	vrt, err := d.GetWarpedVRT("EPSG:3857")
 	if err != nil {
 		panic(err)
 	}
 	defer vrt.Close()
 
-	vrtBounds, err := vrt.Bounds()
-	if err != nil {
-		panic(err)
-	}
-	vrtWidth := float64(vrt.Width())
-	vrtHeight := float64(vrt.Height())
-	// vrtTransform, err := vrt.Transform()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// vrtWidth := vrt.Width()
-	// vrtHeight := vrt.Height()
-
 	tileSize = 256
-	size := float64(tileSize)
 
 	// minTile, maxTile := tiles.TileRange(4, mercatorBounds)
 	// fmt.Println(minTile, maxTile)
 
-	tileID := tiles.NewTileID(4, 4, 6)
-	tileBounds := tileID.MercatorBounds()
-	window, err := vrt.Window(tileBounds)
+	// tileID := tiles.NewTileID(4, 4, 6)
+	tileID := tiles.NewTileID(17, 35952, 52966)
+	data, tileTransform, err := vrt.ReadTile(tileID, tileSize)
 	if err != nil {
 		panic(err)
 	}
 
-	dstTransform, err := vrt.WindowTransform(window)
-	if err != nil {
-		panic(err)
-	}
-	// scale for tile
-	dstTransform = dstTransform.Scale(window.Width/size, window.Height/size)
-	// fmt.Printf("dst transform:\n%v\n", dstTransform)
-
-	xres, yres := dstTransform.Resolution()
-	leftOffset := math.Max(math.Round((vrtBounds[0]-tileBounds[0])/xres), 0)
-	rightOffset := math.Max(math.Round((tileBounds[2]-vrtBounds[2])/xres), 0)
-
-	bottomOffset := math.Max(math.Round((vrtBounds[1]-tileBounds[1])/yres), 0)
-	topOffset := math.Max(math.Round((tileBounds[3]-vrtBounds[3])/yres), 0)
-
-	width := int(size - leftOffset - rightOffset)
-	height := int(size - topOffset - bottomOffset)
-
-	fmt.Printf("xres, yres: (%v,%v)\nleft: %v, right: %v, bottom: %v, top: %v, width: %v, height: %v\n", xres, yres, leftOffset, rightOffset, bottomOffset, topOffset, width, height)
-
-	// crop the window to the available pixels and convert to integer values
-	// TODO: should this be floored
-	xStart := math.Round(math.Min(math.Max(window.XOffset, 0), vrtWidth))
-	yStart := math.Round(math.Min(math.Max(window.YOffset, 0), vrtHeight))
-	xStop := math.Max(math.Min(window.XOffset+window.Width, vrtWidth), 0)
-	yStop := math.Max(math.Min(window.YOffset+window.Height, vrtHeight), 0)
-	readWidth := int(math.Floor((xStop - xStart) + 0.5))
-	readHeight := int(math.Floor((yStop - yStart) + 0.5))
-
-	fmt.Printf("read window:\n%v\n", window)
-	fmt.Printf("cropped read window: xoff: %v, yoff: %v, width: %v, height: %v\n", xStart, yStart, readWidth, readHeight)
-
-	data, err := vrt.Read(int(xStart), int(yStart), readWidth, readHeight, width, height)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("Read data: %vx%v\n", data.Width, data.Height)
-
-	// assume nodata is always present
-	nodata, _, err := vrt.Nodata()
-	if err != nil {
-		panic(err)
-	}
-
-	var tileIsEmpty bool
-
-	switch vrt.DType() {
-	case "uint8":
-		tileIsEmpty = data.Equals(uint8(nodata))
-	default:
-		panic("other data types not yet supported")
-	}
-
-	if tileIsEmpty {
-		// TODO: skip making tile
-		fmt.Println("TODO: skip tile")
-	}
-
-	// TODO: fix type casting, just make tileSize an int
-	if width != int(tileSize) || height != int(tileSize) {
-		fmt.Println("Paste tile data into full tile array")
-
-		// 		#     out = np.empty((1, tile_size, tile_size), dtype=vrt.dtypes[0])
-		// #     out.fill(vrt.nodata)
-		// #     out[
-		// #         0,
-		// #         top_offset : top_offset + data.shape[1],
-		// #         left_offset : left_offset + data.shape[2],
-		// #     ] = data
-		// #     data = out
-	}
+	gdal.WriteGeoTIFF("/tmp/test.tif", data, tileTransform, vrt.CRS(), vrt.Nodata())
 
 	// VRT must be closed before dataset
 	vrt.Close()
