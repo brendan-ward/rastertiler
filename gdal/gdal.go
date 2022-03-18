@@ -293,7 +293,6 @@ func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWi
 	dtype := gdalDtypeStr[int(gdalDataType)]
 
 	var array *Array
-	// var buffer interface{}
 	var bufferPtr unsafe.Pointer
 	size := bufferWidth * bufferHeight
 
@@ -363,6 +362,11 @@ func (d *Dataset) ReadTile(tileID *tiles.TileID, tileSize int) (*Array, *affine.
 	yStop := math.Max(math.Min(window.YOffset+window.Height, vrtHeight), 0)
 	readWidth := int(math.Floor((xStop - xStart) + 0.5))
 	readHeight := int(math.Floor((yStop - yStart) + 0.5))
+
+	// fmt.Println(window)
+	// fmt.Println(tileTransform)
+	// fmt.Printf("xoff: %v, yoff: %v, width: %v, height:%v\n", xStart, yStart, readWidth, readHeight)
+	// fmt.Printf("paste offsets: %v, %v\n", int(topOffset), int(leftOffset))
 
 	if readWidth <= 0 || readHeight <= 0 {
 		// no tile available

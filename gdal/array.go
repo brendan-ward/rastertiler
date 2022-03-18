@@ -94,7 +94,12 @@ func (left *Array) Equals(right *Array) bool {
 
 // Get value at row, col position
 func (a *Array) Get(row int, col int) interface{} {
-	return a.buffer.([]interface{})[row*a.Width+col]
+	switch buffer := a.buffer.(type) {
+	case []uint8:
+		return buffer[row*a.Width+col]
+	default:
+		panic("Set() not implemented yet for other dtypes")
+	}
 }
 
 // Set value into row, col position
@@ -105,6 +110,13 @@ func (a *Array) Set(row int, col int, value interface{}) {
 	default:
 		panic("Set() not implemented yet for other dtypes")
 	}
+}
+
+func (a *Array) Uint8Buffer() ([]uint8, error) {
+	if a.DType != "uint8" {
+		return nil, fmt.Errorf("array data type is not uint8")
+	}
+	return a.buffer.([]uint8), nil
 }
 
 //  Create a new array and fill with fill value, which must be of same type

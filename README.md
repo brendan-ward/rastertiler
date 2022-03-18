@@ -1,6 +1,6 @@
 # rastertiler
 
-A go-based single-band GeoTIFF to PNG mbtiles creator.
+A Go-based single-band GeoTIFF to PNG mbtiles creator.
 
 ## Development
 

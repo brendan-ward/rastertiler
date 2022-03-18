@@ -7,7 +7,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/brendan-ward/rastertiler/encoding"
 	"github.com/brendan-ward/rastertiler/gdal"
 	"github.com/brendan-ward/rastertiler/mbtiles"
 	"github.com/brendan-ward/rastertiler/tiles"
@@ -21,13 +23,14 @@ var tilesetName string
 var description string
 var numWorkers int
 var tileSize int
+var colormapStr string
 
 var createCmd = &cobra.Command{
-	Use:   "create [IN.feather] [OUT.mbtiles]",
-	Short: "Create a MVT tileset from a GeoArrow file",
+	Use:   "create [IN.tiff] [OUT.mbtiles]",
+	Short: "Create an MBTiles tileset from a single-band GeoTIFF",
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
-			return errors.New("feather and mbtiles filenames are required")
+			return errors.New("GeoTIFF and mbtiles filenames are required")
 		}
 		if _, err := os.Stat(args[0]); errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("input file '%s' does not exist", args[0])
@@ -67,7 +70,7 @@ func init() {
 	createCmd.Flags().StringVarP(&tilesetName, "name", "n", "", "tileset name")
 	createCmd.Flags().StringVar(&description, "description", "", "tileset description")
 	createCmd.Flags().IntVarP(&numWorkers, "workers", "w", 4, "number of workers to create tiles")
-	// TODO: colormap
+	createCmd.Flags().StringVarP(&colormapStr, "colormap", "c", "", "colormap '<value>:<hex>,<value>:<hex>'")
 }
 
 func produce(minZoom uint8, maxZoom uint8, bounds [4]float64, queue chan<- *tiles.TileID) {
@@ -98,7 +101,12 @@ func produce(minZoom uint8, maxZoom uint8, bounds [4]float64, queue chan<- *tile
 }
 
 func create(infilename string, outfilename string) error {
-	// set defaults
+	colormap, err := encoding.NewColormap(colormapStr)
+	if err != nil {
+		panic(err)
+	}
+
+	// default to input filename, without extension
 	if tilesetName == "" {
 		tilesetName = strings.TrimSuffix(path.Base(infilename), filepath.Ext(infilename))
 	}
@@ -120,81 +128,81 @@ func create(infilename string, outfilename string) error {
 		panic(err)
 	}
 
-	// mercatorBounds, err := d.MercatorBounds()
-	// if err != nil {
-	// 	panic(err)
-	// }
+	mercatorBounds, err := d.MercatorBounds()
+	if err != nil {
+		panic(err)
+	}
+
+	d.Close()
 
 	db.WriteMetadata(tilesetName, description, minzoom, maxzoom, geoBounds)
 
-	vrt, err := d.GetWarpedVRT("EPSG:3857")
-	if err != nil {
-		panic(err)
+	queue := make(chan *tiles.TileID)
+	var wg sync.WaitGroup
+
+	go produce(minzoom, maxzoom, mercatorBounds, queue)
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			con, err := db.GetConnection()
+			if err != nil {
+				panic(err)
+			}
+			defer db.CloseConnection(con)
+
+			// get VRT once per goroutine
+			ds, err := gdal.Open(infilename)
+			defer ds.Close()
+
+			vrt, err := ds.GetWarpedVRT("EPSG:3857")
+			if err != nil {
+				panic(err)
+			}
+			defer vrt.Close()
+
+			for tileID := range queue {
+				data, _, err := vrt.ReadTile(tileID, tileSize)
+				if err != nil {
+					panic(err)
+				}
+
+				// FIXME: debug only
+				if data != nil {
+					// following is only valid for uint8 data
+					buffer, err := data.Uint8Buffer()
+					if err != nil {
+						panic(err)
+					}
+
+					var png []byte
+
+					if colormap != nil {
+						png, err = encoding.EncodePalettedPNG(buffer, data.Width, data.Height, colormap)
+
+					} else {
+						png, err = encoding.EncodeGrayPNG(buffer, data.Width, data.Height)
+					}
+
+					err = os.WriteFile(fmt.Sprintf("/tmp/png/%v_%v_%v.png", tileID.Zoom, tileID.X, tileID.Y), png, 0644)
+					if err != nil {
+						panic(err)
+					}
+
+					// gdal.WriteGeoTIFF(fmt.Sprintf("/tmp/tiffs/%v_%v_%v.tif", tileID.Zoom, tileID.X, tileID.Y), data, tileTransform, vrt.CRS(), vrt.Nodata())
+				}
+
+				// 	if tile != nil {
+				// 		mbtiles.WriteTile(con, tileID, tile)
+				// 	}
+			}
+
+		}()
 	}
-	defer vrt.Close()
 
-	tileSize = 256
-
-	// minTile, maxTile := tiles.TileRange(4, mercatorBounds)
-	// fmt.Println(minTile, maxTile)
-
-	// tileID := tiles.NewTileID(4, 4, 6)
-	tileID := tiles.NewTileID(17, 35952, 52966)
-	data, tileTransform, err := vrt.ReadTile(tileID, tileSize)
-	if err != nil {
-		panic(err)
-	}
-
-	gdal.WriteGeoTIFF("/tmp/test.tif", data, tileTransform, vrt.CRS(), vrt.Nodata())
-
-	// VRT must be closed before dataset
-	vrt.Close()
-
-	// close dataset, no longer needed
-	d.Close()
-
-	// queue := make(chan *tiles.TileID)
-	// var wg sync.WaitGroup
-
-	// go produce(minzoom, maxzoom, mercatorBounds, queue)
-
-	// for i := 0; i < numWorkers; i++ {
-	// 	wg.Add(1)
-	// 	go func() {
-	// 		defer wg.Done()
-
-	// 		con, err := db.GetConnection()
-	// 		if err != nil {
-	// 			panic(err)
-	// 		}
-	// 		defer db.CloseConnection(con)
-
-	// 		// get VRT once per goroutine
-	// 		ds, err := gdal.Open(infilename)
-	// 		defer ds.Close()
-
-	// 		vrt, err := ds.GetWarpedVRT("EPSG:3857")
-	// 		if err != nil {
-	// 			panic(err)
-	// 		}
-	// 		defer vrt.Close()
-
-	// 		// for tileID := range queue {
-	// 		// 	fmt.Println(tileID)
-	// 		// 	// 	tile, err := // TODO:
-	// 		// 	// 	if err != nil {
-	// 		// 	// 		panic(err)
-	// 		// 	// 	}
-
-	// 		// 	// 	if tile != nil {
-	// 		// 	// 		mbtiles.WriteTile(con, tileID, tile)
-	// 		// 	// 	}
-	// 		// }
-
-	// 	}()
-	// }
-
-	// wg.Wait()
+	wg.Wait()
 
 	return nil
 }
