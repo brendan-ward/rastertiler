@@ -385,7 +385,10 @@ func (d *Dataset) ReadTile(tileID *tiles.TileID, tileSize int) (*Array, *affine.
 
 	if width != tileSize || height != tileSize {
 		out := NewArray(tileSize, tileSize, data.DType, d.nodata)
-		out.Paste(data, int(topOffset), int(leftOffset))
+		err := out.Paste(data, int(topOffset), int(leftOffset))
+		if err != nil {
+			return nil, nil, err
+		}
 		data = out
 	}
 

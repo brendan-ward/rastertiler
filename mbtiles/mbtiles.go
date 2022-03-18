@@ -1,10 +1,9 @@
 package mbtiles
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,8 +29,7 @@ CREATE TABLE IF NOT EXISTS map (
 	zoom_level INTEGER,
 	tile_column INTEGER,
 	tile_row INTEGER,
-	tile_id TEXT,
-	grid_id TEXT
+	tile_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS map_index ON map (zoom_level, tile_column, tile_row);
 
@@ -86,10 +84,12 @@ func (db *MBtilesWriter) Close() {
 		if err != nil {
 			panic(err)
 		}
-		err = sqlitex.Exec(con, `PRAGMA wal_checkpoint;`, nil)
+		// flush the WAL
+		err = sqlitex.Exec(con, "PRAGMA wal_checkpoint;", nil)
 		if err != nil {
 			panic(err)
 		}
+
 		db.CloseConnection(con)
 
 		db.pool.Close()
@@ -117,7 +117,7 @@ func writeMetadataItem(con *sqlite.Conn, key string, value interface{}) error {
 	return sqlitex.Exec(con, "INSERT INTO metadata (name,value) VALUES (?, ?)", nil, key, value)
 }
 
-func (db *MBtilesWriter) WriteMetadata(name string, description string, minZoom uint8, maxZoom uint8, bounds [4]float64) (err error) {
+func (db *MBtilesWriter) WriteMetadata(name string, description string, attribution string, minZoom uint8, maxZoom uint8, bounds [4]float64) (err error) {
 	if db == nil || db.pool == nil {
 		return fmt.Errorf("cannot write to closed mbtiles database")
 	}
@@ -136,6 +136,11 @@ func (db *MBtilesWriter) WriteMetadata(name string, description string, minZoom 
 	}
 	if description != "" {
 		if err = writeMetadataItem(con, "description", description); err != nil {
+			return err
+		}
+	}
+	if attribution != "" {
+		if err = writeMetadataItem(con, "attribution", attribution); err != nil {
 			return err
 		}
 	}
@@ -175,30 +180,18 @@ func (db *MBtilesWriter) WriteTile(tile *tiles.TileID, data []byte) error {
 }
 
 // Write the tile to the open connection
-func WriteTile(con *sqlite.Conn, tile *tiles.TileID, data []byte) (err error) {
-	// GZIP tile data
-	var b bytes.Buffer
-	gz := gzip.NewWriter(&b)
-
-	_, err = gz.Write(data)
-	if err != nil {
-		return err
-	}
-	if err = gz.Flush(); err != nil {
-		return err
-	}
-	if err = gz.Close(); err != nil {
-		return err
-	}
-
+func WriteTile(con *sqlite.Conn, tile *tiles.TileID, png []byte) (err error) {
 	// flip tile Y to match mbtiles spec
 	y := (1 << tile.Zoom) - 1 - tile.Y
 
 	defer sqlitex.Save(con)(&err)
 
-	id := sha1.Sum(data)
+	h := sha1.New()
+	h.Write(png)
+	id := hex.EncodeToString(h.Sum(nil))
+
 	err = sqlitex.Exec(con, "INSERT OR REPLACE INTO images (tile_id, tile_data) values (?, ?)",
-		nil, id, b.Bytes())
+		nil, id, png)
 	if err != nil {
 		return fmt.Errorf("could not write tile %v to mbtiles: %q", tile, err)
 	}

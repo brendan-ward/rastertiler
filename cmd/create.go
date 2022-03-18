@@ -21,6 +21,7 @@ var minzoom uint8
 var maxzoom uint8
 var tilesetName string
 var description string
+var attribution string
 var numWorkers int
 var tileSize int
 var colormapStr string
@@ -68,9 +69,10 @@ func init() {
 	createCmd.Flags().Uint8VarP(&maxzoom, "maxzoom", "z", 0, "maximum zoom level")
 	createCmd.Flags().IntVarP(&tileSize, "tilesize", "s", 256, "tile size in pixels")
 	createCmd.Flags().StringVarP(&tilesetName, "name", "n", "", "tileset name")
-	createCmd.Flags().StringVar(&description, "description", "", "tileset description")
+	createCmd.Flags().StringVarP(&description, "description", "d", "", "tileset description")
+	createCmd.Flags().StringVarP(&attribution, "attribution", "a", "", "tileset description")
 	createCmd.Flags().IntVarP(&numWorkers, "workers", "w", 4, "number of workers to create tiles")
-	createCmd.Flags().StringVarP(&colormapStr, "colormap", "c", "", "colormap '<value>:<hex>,<value>:<hex>'")
+	createCmd.Flags().StringVarP(&colormapStr, "colormap", "c", "", "colormap '<value>:<hex>,<value>:<hex>'.  Only valid for 8-bit data")
 }
 
 func produce(minZoom uint8, maxZoom uint8, bounds [4]float64, queue chan<- *tiles.TileID) {
@@ -97,15 +99,9 @@ func produce(minZoom uint8, maxZoom uint8, bounds [4]float64, queue chan<- *tile
 		}
 	}
 	uiprogress.Stop()
-
 }
 
 func create(infilename string, outfilename string) error {
-	colormap, err := encoding.NewColormap(colormapStr)
-	if err != nil {
-		panic(err)
-	}
-
 	// default to input filename, without extension
 	if tilesetName == "" {
 		tilesetName = strings.TrimSuffix(path.Base(infilename), filepath.Ext(infilename))
@@ -113,29 +109,46 @@ func create(infilename string, outfilename string) error {
 
 	d, err := gdal.Open(infilename)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer d.Close()
 
+	var encoder encoding.PNGEncoder
+
+	switch d.DType() {
+	case "uint8":
+		if colormapStr != "" {
+			encoder, err = encoding.NewColormapEncoder(colormapStr)
+			if err != nil {
+				return err
+			}
+		} else {
+			encoder = encoding.NewGrayscaleEncoder()
+		}
+
+	default:
+		panic("encoding not yet supported for other dtypes")
+	}
+
 	db, err := mbtiles.NewMBtilesWriter(outfilename, numWorkers)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer db.Close()
 
 	geoBounds, err := d.GeoBounds()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	mercatorBounds, err := d.MercatorBounds()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	d.Close()
 
-	db.WriteMetadata(tilesetName, description, minzoom, maxzoom, geoBounds)
+	db.WriteMetadata(tilesetName, description, attribution, minzoom, maxzoom, geoBounds)
 
 	queue := make(chan *tiles.TileID)
 	var wg sync.WaitGroup
@@ -169,34 +182,26 @@ func create(infilename string, outfilename string) error {
 					panic(err)
 				}
 
-				// FIXME: debug only
-				if data != nil {
-					// following is only valid for uint8 data
-					buffer, err := data.Uint8Buffer()
+				if data != nil && !data.EqualsValue(vrt.Nodata()) {
+					buffer, width, height, bits, err := data.Uint8Buffer()
 					if err != nil {
 						panic(err)
 					}
 
 					var png []byte
+					png, err = encoder.Encode(buffer, width, height, bits)
 
-					if colormap != nil {
-						png, err = encoding.EncodePalettedPNG(buffer, data.Width, data.Height, colormap)
+					// FIXME: debug only
+					// err = os.WriteFile(fmt.Sprintf("/tmp/png/%v_%v_%v.png", tileID.Zoom, tileID.X, tileID.Y), png, 0644)
+					// if err != nil {
+					// 	panic(err)
+					// }
 
-					} else {
-						png, err = encoding.EncodeGrayPNG(buffer, data.Width, data.Height)
-					}
+					mbtiles.WriteTile(con, tileID, png)
 
-					err = os.WriteFile(fmt.Sprintf("/tmp/png/%v_%v_%v.png", tileID.Zoom, tileID.X, tileID.Y), png, 0644)
-					if err != nil {
-						panic(err)
-					}
-
+					// FIXME: debug only
 					// gdal.WriteGeoTIFF(fmt.Sprintf("/tmp/tiffs/%v_%v_%v.tif", tileID.Zoom, tileID.X, tileID.Y), data, tileTransform, vrt.CRS(), vrt.Nodata())
 				}
-
-				// 	if tile != nil {
-				// 		mbtiles.WriteTile(con, tileID, tile)
-				// 	}
 			}
 
 		}()

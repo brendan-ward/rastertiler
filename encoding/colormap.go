@@ -2,6 +2,7 @@ package encoding
 
 import (
 	"fmt"
+	"image"
 	"image/color"
 	"strconv"
 	"strings"
@@ -28,10 +29,6 @@ func (c *Colormap) Palette() color.Palette {
 // Create new colormap by parsing colormap string, which is a comma-delimited
 // set of <value>:<hex> entries, e.g., "1:#AABBCC,2:#DDEEFF"
 func NewColormap(colormap string) (*Colormap, error) {
-	if colormap == "" {
-		return nil, nil
-	}
-
 	entries := strings.Split(strings.ReplaceAll(colormap, " ", ""), ",")
 
 	palette := make([]color.Color, len(entries)+1)
@@ -93,4 +90,34 @@ func parseHex(hex string) (c color.NRGBA, err error) {
 		err = fmt.Errorf("Invalid hex color format")
 	}
 	return c, err
+}
+
+type ColormapEncoder struct {
+	colormap *Colormap
+}
+
+func NewColormapEncoder(colormapStr string) (*ColormapEncoder, error) {
+	colormap, err := NewColormap(colormapStr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ColormapEncoder{
+		colormap: colormap,
+	}, nil
+}
+
+func (e *ColormapEncoder) Encode(buffer []uint8, width int, height int, bits uint8) ([]byte, error) {
+	img := image.NewPaletted(image.Rect(0, 0, width, height), e.colormap.Palette())
+
+	var value uint8
+	for row := 0; row < height; row++ {
+		for col := 0; col < width; col++ {
+			// value = data.Get(row, col).(uint8)
+			value = buffer[row*width+col]
+			img.SetColorIndex(col, row, e.colormap.GetIndex(value))
+		}
+	}
+
+	return encodePNG(img)
 }

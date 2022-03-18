@@ -112,11 +112,18 @@ func (a *Array) Set(row int, col int, value interface{}) {
 	}
 }
 
-func (a *Array) Uint8Buffer() ([]uint8, error) {
-	if a.DType != "uint8" {
-		return nil, fmt.Errorf("array data type is not uint8")
+func (a *Array) Uint8Buffer() (buffer []uint8, width int, height int, bits uint8, err error) {
+	width = a.Width
+	height = a.Height
+
+	switch typedBuffer := a.buffer.(type) {
+	case []uint8:
+		bits = 8
+		buffer = typedBuffer
+	default:
+		panic("Uint8Buffer() not yet supported for other data types")
 	}
-	return a.buffer.([]uint8), nil
+	return
 }
 
 //  Create a new array and fill with fill value, which must be of same type
@@ -149,30 +156,55 @@ func (target *Array) Paste(source *Array, rowOffset int, colOffset int) error {
 		return fmt.Errorf("data types do not match")
 	}
 
-	// TODO:  make sure that source will fit into target
 	if rowOffset < 0 || colOffset < 0 {
 		return fmt.Errorf("offsets must be >= 0")
 	}
 
-	if rowOffset+source.Height > target.Height || rowOffset+source.Width > target.Width {
+	if rowOffset+source.Height > target.Height || colOffset+source.Width > target.Width {
 		return fmt.Errorf("size of array to paste is too big for target array, given offsets")
 	}
 
 	var i int
 	var srcIndex int
-	for row := rowOffset; row < rowOffset+source.Height; row++ {
-		for col := colOffset; col < colOffset+source.Width; col++ {
-			// TODO: verify indexing
-			i = row*target.Width + col
-			srcIndex = (row-rowOffset)*source.Width + (col - colOffset)
-			switch target.DType {
-			case "uint8":
-				target.buffer.([]uint8)[i] = source.buffer.([]uint8)[srcIndex]
-			default:
-				panic("other dtypes not yet supported for Paste()")
+
+	switch targetBuffer := target.buffer.(type) {
+	case []uint8:
+		sourceBuffer := source.buffer.([]uint8)
+		for row := rowOffset; row < rowOffset+source.Height; row++ {
+			for col := colOffset; col < colOffset+source.Width; col++ {
+				i = row*target.Width + col
+				srcIndex = (row-rowOffset)*source.Width + (col - colOffset)
+				targetBuffer[i] = sourceBuffer[srcIndex]
 			}
 		}
+	default:
+		panic("other dtypes not yet supported for Paste()")
 	}
 
 	return nil
+}
+
+// Count number of pixels per value and return as a map[count]value
+func (a *Array) Histogram() map[int]int {
+	counts := make(map[int]int)
+
+	switch buffer := a.buffer.(type) {
+	case []uint8:
+		var prior int
+		var ok bool
+		var value int
+
+		for i := 0; i < a.Width*a.Height; i++ {
+			value = int(buffer[i])
+			if prior, ok = counts[value]; !ok {
+				prior = 0
+			}
+			counts[value] = prior + 1
+		}
+
+	default:
+		panic("UniqueCounts() not implemented yet for other dtypes")
+	}
+
+	return counts
 }
