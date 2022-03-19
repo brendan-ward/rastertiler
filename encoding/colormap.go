@@ -1,9 +1,11 @@
 package encoding
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
+	"image/png"
 	"strconv"
 	"strings"
 )
@@ -94,9 +96,11 @@ func parseHex(hex string) (c color.NRGBA, err error) {
 
 type ColormapEncoder struct {
 	colormap *Colormap
+	img      *image.Paletted
+	buffer   bytes.Buffer
 }
 
-func NewColormapEncoder(colormapStr string) (*ColormapEncoder, error) {
+func NewColormapEncoder(width int, height int, colormapStr string) (*ColormapEncoder, error) {
 	colormap, err := NewColormap(colormapStr)
 	if err != nil {
 		return nil, err
@@ -104,20 +108,23 @@ func NewColormapEncoder(colormapStr string) (*ColormapEncoder, error) {
 
 	return &ColormapEncoder{
 		colormap: colormap,
+		img:      image.NewPaletted(image.Rect(0, 0, width, height), colormap.Palette()),
 	}, nil
 }
 
 func (e *ColormapEncoder) Encode(buffer []uint8, width int, height int, bits uint8) ([]byte, error) {
-	img := image.NewPaletted(image.Rect(0, 0, width, height), e.colormap.Palette())
-
 	var value uint8
 	for row := 0; row < height; row++ {
 		for col := 0; col < width; col++ {
-			// value = data.Get(row, col).(uint8)
 			value = buffer[row*width+col]
-			img.SetColorIndex(col, row, e.colormap.GetIndex(value))
+			e.img.SetColorIndex(col, row, e.colormap.GetIndex(value))
 		}
 	}
 
-	return encodePNG(img)
+	e.buffer.Reset()
+	err := png.Encode(&e.buffer, e.img)
+	if err != nil {
+		return nil, err
+	}
+	return e.buffer.Bytes(), nil
 }

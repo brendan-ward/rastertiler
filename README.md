@@ -2,9 +2,47 @@
 
 A Go-based single-band GeoTIFF to PNG mbtiles creator.
 
-## Development
-
 Requires GDAL >= 3.4 to be installed on the system.
+
+## Installation
+
+`go get https://github.com/brendan-ward/rastertiler`
+
+## Usage
+
+### Create MBTiles from GeoTIFF
+
+```bash
+Create an MBTiles tileset from a single-band GeoTIFF
+
+Usage:
+  rastertiler create [IN.tiff] [OUT.mbtiles] [flags]
+
+Flags:
+  -a, --attribution string   tileset description
+  -c, --colormap string      colormap '<value>:<hex>,<value>:<hex>'.  Only valid for 8-bit data
+  -d, --description string   tileset description
+  -h, --help                 help for create
+  -z, --maxzoom uint8        maximum zoom level
+  -Z, --minzoom uint8        minimum zoom level
+  -n, --name string          tileset name
+  -s, --tilesize int         tile size in pixels (default 256)
+  -w, --workers int          number of workers to create tiles (default 4)
+```
+
+To create MBtiles from a single-band `uint8` GeoTIFF:
+
+```bash
+rastertiler create example.tif example.mbtiles --minzoom 0 --maxzoom 2
+```
+
+By default, this will render grayscale PNG tiles.
+
+To use a colormap to render the `uint8` data to paletted PNG
+
+```bash
+rastertiler create example.tif example.mbtiles --minzoom 0 --maxzoom 2 --colormap "1:#686868,2:#fbb4b9,3:#c51b8a,4:#49006a"
+```
 
 ## Credits
 

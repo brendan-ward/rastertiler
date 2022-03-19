@@ -51,7 +51,7 @@ type Dataset struct {
 	width     int
 	height    int
 	nodata    interface{} // value is in dtype
-	bounds    [4]float64
+	bounds    *affine.Bounds
 }
 
 func newDataset(filename string, ptr C.GDALDatasetH) (*Dataset, error) {
@@ -100,11 +100,7 @@ func newDataset(filename string, ptr C.GDALDatasetH) (*Dataset, error) {
 	}
 
 	// raster is anchored in upper left; this is the standard direction
-	var bounds [4]float64
-	bounds[0] = transform.C
-	bounds[1] = transform.F + transform.E*float64(height)
-	bounds[2] = transform.C + transform.A*float64(width)
-	bounds[3] = transform.F
+	bounds := &affine.Bounds{transform.C, transform.F + transform.E*float64(height), transform.C + transform.A*float64(width), transform.F}
 
 	return &Dataset{
 		path:      filename,
@@ -146,28 +142,26 @@ func (d *Dataset) mustBeOpen() {
 	}
 }
 
-// Get bounds of dataset: [xmin, ymin, xmax, ymax]
-func (d *Dataset) Bounds() [4]float64 {
+// Get bounds of dataset
+func (d *Dataset) Bounds() *affine.Bounds {
 	d.mustBeOpen()
 
 	return d.bounds
 }
 
-// Get geographic bounds of dataset: [xmin, ymin, xmax, ymax]
-func (d *Dataset) GeoBounds() ([4]float64, error) {
+// Get geographic bounds of dataset
+func (d *Dataset) GeoBounds() (*affine.Bounds, error) {
 	return d.transformBounds("EPSG:4326")
 }
 
-// Get Mercator bounds of dataset: [xmin, ymin, xmax, ymax]
-func (d *Dataset) MercatorBounds() ([4]float64, error) {
+// Get Mercator bounds of dataset
+func (d *Dataset) MercatorBounds() (*affine.Bounds, error) {
 	return d.transformBounds("EPSG:3857")
 }
 
 // Project dataset bounds to CRS
-func (d *Dataset) transformBounds(crs string) ([4]float64, error) {
+func (d *Dataset) transformBounds(crs string) (*affine.Bounds, error) {
 	d.mustBeOpen()
-
-	var bounds [4]float64
 
 	srcSRS := C.GDALGetSpatialRef(d.ptr)
 
@@ -177,27 +171,29 @@ func (d *Dataset) transformBounds(crs string) ([4]float64, error) {
 	defer C.OSRDestroySpatialReference(targetSRS)
 	C.OSRSetFromUserInput(targetSRS, targetSRSName)
 	if unsafe.Pointer(targetSRS) == nil {
-		return bounds, fmt.Errorf("could not set target SRS to WGS84")
+		return nil, fmt.Errorf("could not set target SRS to WGS84")
 	}
 	// make sure that coords are always returned in long/lat order (otherwise EPSG:4326 returns in opposite order)
 	C.OSRSetAxisMappingStrategy(targetSRS, C.OAMS_TRADITIONAL_GIS_ORDER)
 
 	transform := C.OCTNewCoordinateTransformation(srcSRS, targetSRS)
 	if unsafe.Pointer(transform) == nil {
-		return bounds, fmt.Errorf("could not create coordinate transform")
+		return nil, fmt.Errorf("could not create coordinate transform")
 	}
 	defer C.OCTDestroyCoordinateTransformation(transform)
 
+	bounds := &affine.Bounds{Xmin: 0, Ymin: 0, Xmax: 0, Ymax: 0}
+
 	if C.OCTTransformBounds(
 		transform,
-		C.double(d.bounds[0]),
-		C.double(d.bounds[1]),
-		C.double(d.bounds[2]),
-		C.double(d.bounds[3]),
-		(*C.double)(unsafe.Pointer(&bounds[0])),
-		(*C.double)(unsafe.Pointer(&bounds[1])),
-		(*C.double)(unsafe.Pointer(&bounds[2])),
-		(*C.double)(unsafe.Pointer(&bounds[3])),
+		C.double(d.bounds.Xmin),
+		C.double(d.bounds.Ymin),
+		C.double(d.bounds.Xmax),
+		C.double(d.bounds.Ymax),
+		(*C.double)(unsafe.Pointer(&bounds.Xmin)),
+		(*C.double)(unsafe.Pointer(&bounds.Ymin)),
+		(*C.double)(unsafe.Pointer(&bounds.Xmax)),
+		(*C.double)(unsafe.Pointer(&bounds.Ymax)),
 		21,
 	) == 0 {
 		return bounds, fmt.Errorf("error transforming bounds to WGS84 coordinates")
@@ -243,7 +239,7 @@ func (d *Dataset) DType() string {
 	return d.dtype
 }
 
-func (d *Dataset) Window(bounds [4]float64) *Window {
+func (d *Dataset) Window(bounds *affine.Bounds) *Window {
 	d.mustBeOpen()
 
 	return WindowFromBounds(d.transform, bounds)
@@ -348,10 +344,10 @@ func (d *Dataset) ReadTile(tileID *tiles.TileID, tileSize int) (*Array, *affine.
 	tileTransform = tileTransform.Scale(window.Width/size, window.Height/size)
 
 	xres, yres := tileTransform.Resolution()
-	leftOffset := math.Max(math.Round((d.bounds[0]-tileBounds[0])/xres), 0)
-	rightOffset := math.Max(math.Round((tileBounds[2]-d.bounds[2])/xres), 0)
-	bottomOffset := math.Max(math.Round((d.bounds[1]-tileBounds[1])/yres), 0)
-	topOffset := math.Max(math.Round((tileBounds[3]-d.bounds[3])/yres), 0)
+	leftOffset := math.Max(math.Round((d.bounds.Xmin-tileBounds.Xmin)/xres), 0)
+	rightOffset := math.Max(math.Round((tileBounds.Xmax-d.bounds.Xmax)/xres), 0)
+	bottomOffset := math.Max(math.Round((d.bounds.Ymin-tileBounds.Ymin)/yres), 0)
+	topOffset := math.Max(math.Round((tileBounds.Ymax-d.bounds.Ymax)/yres), 0)
 	width := int(size - leftOffset - rightOffset)
 	height := int(size - topOffset - bottomOffset)
 

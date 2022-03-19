@@ -19,7 +19,7 @@ func (w *Window) String() string {
 }
 
 // Calculate Window based on Affine transform and bounds
-func WindowFromBounds(transform *affine.Affine, bounds [4]float64) *Window {
+func WindowFromBounds(transform *affine.Affine, bounds *affine.Bounds) *Window {
 	invTransform := transform.Invert()
 
 	// calculate outer bounds
@@ -32,19 +32,19 @@ func WindowFromBounds(transform *affine.Affine, bounds [4]float64) *Window {
 	ys := [4]float64{}
 	var x float64
 	var y float64
-	x, y = invTransform.Multiply(bounds[0], bounds[1])
+	x, y = invTransform.Multiply(bounds.Xmin, bounds.Ymin)
 	xs[0] = x
 	ys[0] = y
 
-	x, y = invTransform.Multiply(bounds[0], bounds[3])
+	x, y = invTransform.Multiply(bounds.Xmin, bounds.Ymax)
 	xs[1] = x
 	ys[1] = y
 
-	x, y = invTransform.Multiply(bounds[2], bounds[1])
+	x, y = invTransform.Multiply(bounds.Xmax, bounds.Ymin)
 	xs[2] = x
 	ys[2] = y
 
-	x, y = invTransform.Multiply(bounds[2], bounds[3])
+	x, y = invTransform.Multiply(bounds.Xmax, bounds.Ymax)
 	xs[3] = x
 	ys[3] = y
 

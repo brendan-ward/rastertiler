@@ -3,6 +3,8 @@ package tiles
 import (
 	"fmt"
 	"math"
+
+	"github.com/brendan-ward/rastertiler/affine"
 )
 
 var RE float64 = 6378137.0
@@ -69,17 +71,17 @@ func GeoToTile(zoom uint8, x float64, y float64) *TileID {
 // TileRange calculates the min tile x, min tile y, max tile x, max tile y tile
 // range for Mercator coordinates xmin, ymin, xmax, ymax at a given zoom level.
 // Assumes bounds have already been clipped to Mercator world bounds.
-func TileRange(zoom uint8, bounds [4]float64) (*TileID, *TileID) {
+func TileRange(zoom uint8, bounds *affine.Bounds) (*TileID, *TileID) {
 	z2 := 1 << zoom
 	zoomFactor := float64(z2)
 	origin := -ORIGIN
 	eps := 1.0e-11
 
-	xmin := math.Min(math.Max(math.Floor(((bounds[0]-origin)/CE)*zoomFactor), 0), zoomFactor-1)
+	xmin := math.Min(math.Max(math.Floor(((bounds.Xmin-origin)/CE)*zoomFactor), 0), zoomFactor-1)
 	// ymin isn't right yet, spilling over
-	ymin := math.Min(math.Max(math.Floor(((1.0-(((bounds[1]-origin)/CE)+eps))*zoomFactor)), 0), zoomFactor-1)
-	xmax := math.Min(math.Max(math.Floor((((bounds[2]-origin)/CE)-eps)*zoomFactor), 0), zoomFactor-1)
-	ymax := math.Min(math.Max(math.Floor((1.0-((bounds[3]-origin)/CE))*zoomFactor), 0), zoomFactor-1)
+	ymin := math.Min(math.Max(math.Floor(((1.0-(((bounds.Ymin-origin)/CE)+eps))*zoomFactor)), 0), zoomFactor-1)
+	xmax := math.Min(math.Max(math.Floor((((bounds.Xmax-origin)/CE)-eps)*zoomFactor), 0), zoomFactor-1)
+	ymax := math.Min(math.Max(math.Floor((1.0-((bounds.Ymax-origin)/CE))*zoomFactor), 0), zoomFactor-1)
 
 	// tiles start in upper left, flip y values
 	minTile := &TileID{Zoom: zoom, X: uint32(xmin), Y: uint32(ymax)}
@@ -92,25 +94,26 @@ func (t *TileID) String() string {
 	return fmt.Sprintf("Tile(zoom: %v, x: %v, y:%v)", t.Zoom, t.X, t.Y)
 }
 
-func (t *TileID) GeoBounds() (bounds [4]float64) {
+func (t *TileID) GeoBounds() *affine.Bounds {
 	z2 := 1 << t.Zoom
 	zoomFactor := (float64)(z2)
 	x := (float64)(t.X)
 	y := (float64)(t.Y)
-
-	bounds[0] = x/zoomFactor*360.0 - 180.0
-	bounds[1] = math.Atan(math.Sinh(math.Pi*(1.0-2.0*((y+1.0)/zoomFactor)))) * (180.0 / math.Pi)
-	bounds[2] = (x+1.0)/zoomFactor*360.0 - 180.0
-	bounds[3] = math.Atan(math.Sinh(math.Pi*(1.0-2.0*y/zoomFactor))) * (180.0 / math.Pi)
+	bounds := &affine.Bounds{Xmin: 0, Ymin: 0, Xmax: 0, Ymax: 0}
+	bounds.Xmin = x/zoomFactor*360.0 - 180.0
+	bounds.Ymin = math.Atan(math.Sinh(math.Pi*(1.0-2.0*((y+1.0)/zoomFactor)))) * (180.0 / math.Pi)
+	bounds.Xmax = (x+1.0)/zoomFactor*360.0 - 180.0
+	bounds.Ymax = math.Atan(math.Sinh(math.Pi*(1.0-2.0*y/zoomFactor))) * (180.0 / math.Pi)
 	return bounds
 }
 
-func (t *TileID) MercatorBounds() (bounds [4]float64) {
+func (t *TileID) MercatorBounds() *affine.Bounds {
 	z2 := 1 << t.Zoom
+	bounds := &affine.Bounds{Xmin: 0, Ymin: 0, Xmax: 0, Ymax: 0}
 	tileSize := CE / (float64)(z2)
-	bounds[0] = (float64)(t.X)*tileSize - CE/2.0
-	bounds[2] = bounds[0] + tileSize
-	bounds[3] = CE/2 - (float64)(t.Y)*tileSize
-	bounds[1] = bounds[3] - tileSize
+	bounds.Xmin = (float64)(t.X)*tileSize - CE/2.0
+	bounds.Xmax = bounds.Xmin + tileSize
+	bounds.Ymax = CE/2 - (float64)(t.Y)*tileSize
+	bounds.Ymin = bounds.Ymax - tileSize
 	return bounds
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/brendan-ward/rastertiler/affine"
 	"github.com/brendan-ward/rastertiler/encoding"
 	"github.com/brendan-ward/rastertiler/gdal"
 	"github.com/brendan-ward/rastertiler/mbtiles"
@@ -75,7 +76,7 @@ func init() {
 	createCmd.Flags().StringVarP(&colormapStr, "colormap", "c", "", "colormap '<value>:<hex>,<value>:<hex>'.  Only valid for 8-bit data")
 }
 
-func produce(minZoom uint8, maxZoom uint8, bounds [4]float64, queue chan<- *tiles.TileID) {
+func produce(minZoom uint8, maxZoom uint8, bounds *affine.Bounds, queue chan<- *tiles.TileID) {
 	defer close(queue)
 
 	fmt.Println("Creating tiles")
@@ -188,31 +189,17 @@ func create(infilename string, outfilename string) error {
 						panic(err)
 					}
 
-					var png []byte
-					png, err = encoder.Encode(buffer, width, height, bits)
-
-					// FIXME: debug only
-					// err = os.WriteFile(fmt.Sprintf("/tmp/png/%v_%v_%v.png", tileID.Zoom, tileID.X, tileID.Y), png, 0644)
-					// if err != nil {
-					// 	panic(err)
-					// }
-
+					png, err := encoder.Encode(buffer, width, height, bits)
+					if err != nil {
+						panic(err)
+					}
 					mbtiles.WriteTile(con, tileID, png)
-
-					// FIXME: debug only
-					// gdal.WriteGeoTIFF(fmt.Sprintf("/tmp/tiffs/%v_%v_%v.tif", tileID.Zoom, tileID.X, tileID.Y), data, tileTransform, vrt.CRS(), vrt.Nodata())
 				}
 			}
-
 		}()
 	}
 
 	wg.Wait()
 
 	return nil
-}
-
-// TODO: remove
-func Create(infilename string, outfilename string) error {
-	return create(infilename, outfilename)
 }

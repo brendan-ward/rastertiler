@@ -16,9 +16,7 @@ func TestWindowFromBounds(t *testing.T) {
 		F: 2000,
 	}
 
-	bounds := [4]float64{
-		0, 10, 100, 200,
-	}
+	bounds := &affine.Bounds{Xmin: 0, Ymin: 10, Xmax: 100, Ymax: 200}
 
 	expected := Window{
 		XOffset: -33.333333333333336,

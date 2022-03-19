@@ -10,6 +10,7 @@ import (
 
 	"crawshaw.io/sqlite"
 	"crawshaw.io/sqlite/sqlitex"
+	"github.com/brendan-ward/rastertiler/affine"
 	"github.com/brendan-ward/rastertiler/tiles"
 )
 
@@ -117,7 +118,7 @@ func writeMetadataItem(con *sqlite.Conn, key string, value interface{}) error {
 	return sqlitex.Exec(con, "INSERT INTO metadata (name,value) VALUES (?, ?)", nil, key, value)
 }
 
-func (db *MBtilesWriter) WriteMetadata(name string, description string, attribution string, minZoom uint8, maxZoom uint8, bounds [4]float64) (err error) {
+func (db *MBtilesWriter) WriteMetadata(name string, description string, attribution string, minZoom uint8, maxZoom uint8, bounds *affine.Bounds) (err error) {
 	if db == nil || db.pool == nil {
 		return fmt.Errorf("cannot write to closed mbtiles database")
 	}
@@ -150,10 +151,10 @@ func (db *MBtilesWriter) WriteMetadata(name string, description string, attribut
 	if err = writeMetadataItem(con, "maxzoom", maxZoom); err != nil {
 		return err
 	}
-	if err = writeMetadataItem(con, "center", fmt.Sprintf("%.5f,%.5f,%v", (bounds[2]-bounds[0])/2.0, (bounds[3]-bounds[1])/2.0, minZoom)); err != nil {
+	if err = writeMetadataItem(con, "center", fmt.Sprintf("%.5f,%.5f,%v", (bounds.Xmax-bounds.Xmin)/2.0, (bounds.Ymax-bounds.Ymin)/2.0, minZoom)); err != nil {
 		return err
 	}
-	if err = writeMetadataItem(con, "bounds", fmt.Sprintf("%.5f,%.5f,%.5f,%.5f", bounds[0], bounds[1], bounds[2], bounds[3])); err != nil {
+	if err = writeMetadataItem(con, "bounds", fmt.Sprintf("%.5f,%.5f,%.5f,%.5f", bounds.Xmax, bounds.Ymin, bounds.Xmax, bounds.Ymax)); err != nil {
 		return err
 	}
 	if err = writeMetadataItem(con, "type", "overlay"); err != nil {
