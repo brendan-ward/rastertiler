@@ -112,10 +112,7 @@ func (a *Array) Set(row int, col int, value interface{}) {
 	}
 }
 
-func (a *Array) Uint8Buffer() (buffer []uint8, width int, height int, bits uint8, err error) {
-	width = a.Width
-	height = a.Height
-
+func (a *Array) Uint8Buffer() (buffer []uint8, bits uint8, err error) {
 	switch typedBuffer := a.buffer.(type) {
 	case []uint8:
 		bits = 8

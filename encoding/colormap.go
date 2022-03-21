@@ -95,36 +95,35 @@ func parseHex(hex string) (c color.NRGBA, err error) {
 }
 
 type ColormapEncoder struct {
-	colormap *Colormap
-	img      *image.Paletted
-	buffer   bytes.Buffer
+	colormap  *Colormap
+	img       *image.Paletted
+	pngBuffer bytes.Buffer
+	width     int
+	height    int
 }
 
-func NewColormapEncoder(width int, height int, colormapStr string) (*ColormapEncoder, error) {
-	colormap, err := NewColormap(colormapStr)
-	if err != nil {
-		return nil, err
-	}
-
+func NewColormapEncoder(width int, height int, colormap *Colormap) *ColormapEncoder {
 	return &ColormapEncoder{
 		colormap: colormap,
 		img:      image.NewPaletted(image.Rect(0, 0, width, height), colormap.Palette()),
-	}, nil
+		width:    width,
+		height:   height,
+	}
 }
 
-func (e *ColormapEncoder) Encode(buffer []uint8, width int, height int, bits uint8) ([]byte, error) {
+func (e *ColormapEncoder) Encode(data []uint8, bits uint8) ([]byte, error) {
 	var value uint8
-	for row := 0; row < height; row++ {
-		for col := 0; col < width; col++ {
-			value = buffer[row*width+col]
+	for row := 0; row < e.height; row++ {
+		for col := 0; col < e.width; col++ {
+			value = data[row*e.width+col]
 			e.img.SetColorIndex(col, row, e.colormap.GetIndex(value))
 		}
 	}
 
-	e.buffer.Reset()
-	err := png.Encode(&e.buffer, e.img)
+	e.pngBuffer.Reset()
+	err := png.Encode(&e.pngBuffer, e.img)
 	if err != nil {
 		return nil, err
 	}
-	return e.buffer.Bytes(), nil
+	return e.pngBuffer.Bytes(), nil
 }

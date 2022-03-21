@@ -114,21 +114,12 @@ func create(infilename string, outfilename string) error {
 	}
 	defer d.Close()
 
-	var encoder encoding.PNGEncoder
-
-	switch d.DType() {
-	case "uint8":
-		if colormapStr != "" {
-			encoder, err = encoding.NewColormapEncoder(colormapStr)
-			if err != nil {
-				return err
-			}
-		} else {
-			encoder = encoding.NewGrayscaleEncoder()
+	var colormap *encoding.Colormap
+	if d.DType() == "uint8" && colormapStr != "" {
+		colormap, err = encoding.NewColormap(colormapStr)
+		if err != nil {
+			return err
 		}
-
-	default:
-		panic("encoding not yet supported for other dtypes")
 	}
 
 	db, err := mbtiles.NewMBtilesWriter(outfilename, numWorkers)
@@ -177,6 +168,18 @@ func create(infilename string, outfilename string) error {
 			}
 			defer vrt.Close()
 
+			var encoder encoding.PNGEncoder
+			switch ds.DType() {
+			case "uint8":
+				if colormap != nil {
+					encoder = encoding.NewColormapEncoder(tileSize, tileSize, colormap)
+				} else {
+					encoder = encoding.NewGrayscaleEncoder(tileSize, tileSize)
+				}
+			default:
+				panic("encoding not yet supported for other dtypes")
+			}
+
 			for tileID := range queue {
 				data, _, err := vrt.ReadTile(tileID, tileSize)
 				if err != nil {
@@ -184,12 +187,12 @@ func create(infilename string, outfilename string) error {
 				}
 
 				if data != nil && !data.EqualsValue(vrt.Nodata()) {
-					buffer, width, height, bits, err := data.Uint8Buffer()
+					buffer, bits, err := data.Uint8Buffer()
 					if err != nil {
 						panic(err)
 					}
 
-					png, err := encoder.Encode(buffer, width, height, bits)
+					png, err := encoder.Encode(buffer, bits)
 					if err != nil {
 						panic(err)
 					}
