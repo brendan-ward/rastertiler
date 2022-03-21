@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/brendan-ward/rastertiler/affine"
+	"github.com/brendan-ward/rastertiler/array"
 	"github.com/brendan-ward/rastertiler/encoding"
 	"github.com/brendan-ward/rastertiler/gdal"
 	"github.com/brendan-ward/rastertiler/mbtiles"
@@ -152,6 +153,10 @@ func create(infilename string, outfilename string) error {
 		go func() {
 			defer wg.Done()
 
+			var bits uint8
+			var buffer interface{}
+			var tileTransform affine.Affine
+
 			con, err := db.GetConnection()
 			if err != nil {
 				panic(err)
@@ -171,6 +176,8 @@ func create(infilename string, outfilename string) error {
 			var encoder encoding.PNGEncoder
 			switch ds.DType() {
 			case "uint8":
+				buffer = make([]uint8, tileSize*tileSize, tileSize*tileSize)
+				bits = 8
 				if colormap != nil {
 					encoder = encoding.NewColormapEncoder(tileSize, tileSize, colormap)
 				} else {
@@ -181,23 +188,36 @@ func create(infilename string, outfilename string) error {
 			}
 
 			for tileID := range queue {
-				data, _, err := vrt.ReadTile(tileID, tileSize)
+				hasData, err := vrt.ReadTile(buffer, &tileTransform, tileID, tileSize)
 				if err != nil {
 					panic(err)
 				}
 
-				if data != nil && !data.EqualsValue(vrt.Nodata()) {
-					buffer, bits, err := data.Uint8Buffer()
-					if err != nil {
-						panic(err)
-					}
-
-					png, err := encoder.Encode(buffer, bits)
+				if hasData {
+					png, err := encoder.Encode(array.AsUint8(buffer), bits)
 					if err != nil {
 						panic(err)
 					}
 					mbtiles.WriteTile(con, tileID, png)
 				}
+
+				// data, _, err := vrt.ReadTile(tileID, tileSize)
+				// if err != nil {
+				// 	panic(err)
+				// }
+
+				// if data != nil && !data.EqualsValue(vrt.Nodata()) {
+				// 	buffer, bits, err := data.Uint8Buffer()
+				// 	if err != nil {
+				// 		panic(err)
+				// 	}
+
+				// 	png, err := encoder.Encode(buffer, bits)
+				// 	if err != nil {
+				// 		panic(err)
+				// 	}
+				// 	mbtiles.WriteTile(con, tileID, png)
+				// }
 			}
 		}()
 	}

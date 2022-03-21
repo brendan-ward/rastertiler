@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/brendan-ward/rastertiler/affine"
+	"github.com/brendan-ward/rastertiler/array"
 	"github.com/brendan-ward/rastertiler/tiles"
 )
 
@@ -73,8 +74,6 @@ func newDataset(filename string, ptr C.GDALDatasetH) (*Dataset, error) {
 	}
 	transform := affine.FromGDAL(rawTransform)
 
-	// var hasNodata int
-	// rawNodata := int(C.GDALGetRasterNoDataValue(band, (*C.int)(unsafe.Pointer(&hasNodata))))
 	rawNodata := int(C.GDALGetRasterNoDataValue(band, nil))
 	var nodata interface{}
 
@@ -282,29 +281,36 @@ func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
 	return newDataset(fmt.Sprintf("WarpedVRT (src: %v)", d.path), ptr)
 }
 
-func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWidth int, bufferHeight int) (*Array, error) {
+func (d *Dataset) Read(buffer interface{}, offsetX int, offsetY int, width int, height int, bufferWidth int, bufferHeight int) error {
 	d.mustBeOpen()
 
 	gdalDataType := C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1))
-	dtype := gdalDtypeStr[int(gdalDataType)]
+	// dtype := gdalDtypeStr[int(gdalDataType)]
 
-	var array *Array
+	// var array *Array
 	var bufferPtr unsafe.Pointer
-	size := bufferWidth * bufferHeight
+	// size := bufferWidth * bufferHeight
 
-	switch dtype {
-	// TODO: other data types
-	case "uint8":
-		uint8Buffer := make([]uint8, size)
-		array = &Array{
-			DType:  dtype,
-			Width:  bufferWidth,
-			Height: bufferHeight,
-			buffer: uint8Buffer,
-		}
-		bufferPtr = unsafe.Pointer(&uint8Buffer[0])
+	// switch dtype {
+	// // TODO: other data types
+	// case "uint8":
+	// 	uint8Buffer := make([]uint8, size)
+	// 	array = &Array{
+	// 		DType:  dtype,
+	// 		Width:  bufferWidth,
+	// 		Height: bufferHeight,
+	// 		buffer: uint8Buffer,
+	// 	}
+	// 	bufferPtr = unsafe.Pointer(&uint8Buffer[0])
+	// default:
+	// 	panic("Other dtypes not yet supported for reading")
+	// }
+
+	switch typedBuffer := buffer.(type) {
+	case []uint8:
+		bufferPtr = unsafe.Pointer(&typedBuffer[0])
 	default:
-		panic("Other dtypes not yet supported for reading")
+		panic("Other dtypes not yet supported for Read()")
 	}
 
 	if C.GDALDatasetRasterIO(
@@ -324,21 +330,21 @@ func (d *Dataset) Read(offsetX int, offsetY int, width int, height int, bufferWi
 		0,        // line spacing (default)
 		0,        // band spacing (default)
 	) != C.CE_None {
-		return nil, fmt.Errorf("could not read data")
+		return fmt.Errorf("could not read data")
 	}
 
-	return array, nil
+	return nil
 }
 
 // Read a tile of data from a Mercator-projection VRT or dataset
-func (d *Dataset) ReadTile(tileID *tiles.TileID, tileSize int) (*Array, *affine.Affine, error) {
+func (d *Dataset) ReadTile(buffer interface{}, tileTransform *affine.Affine, tileID *tiles.TileID, tileSize int) (hasData bool, err error) {
 	size := float64(tileSize)
 	vrtWidth := float64(d.width)
 	vrtHeight := float64(d.height)
 
 	tileBounds := tileID.MercatorBounds()
 	window := d.Window(tileBounds)
-	tileTransform := d.WindowTransform(window)
+	tileTransform = d.WindowTransform(window)
 
 	// scale transform for tile
 	tileTransform = tileTransform.Scale(window.Width/size, window.Height/size)
@@ -359,36 +365,49 @@ func (d *Dataset) ReadTile(tileID *tiles.TileID, tileSize int) (*Array, *affine.
 	readWidth := int(math.Floor((xStop - xStart) + 0.5))
 	readHeight := int(math.Floor((yStop - yStart) + 0.5))
 
-	// fmt.Println(window)
-	// fmt.Println(tileTransform)
-	// fmt.Printf("xoff: %v, yoff: %v, width: %v, height:%v\n", xStart, yStart, readWidth, readHeight)
-	// fmt.Printf("paste offsets: %v, %v\n", int(topOffset), int(leftOffset))
+	array.Fill(buffer, d.nodata)
 
 	if readWidth <= 0 || readHeight <= 0 {
 		// no tile available
-		return nil, nil, nil
+		hasData = false
+		return
 	}
 
-	data, err := d.Read(int(xStart), int(yStart), readWidth, readHeight, width, height)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if data.EqualsValue(d.nodata) {
-		// empty tile
-		return nil, nil, nil
-	}
-
-	if width != tileSize || height != tileSize {
-		out := NewArray(tileSize, tileSize, data.DType, d.nodata)
-		err := out.Paste(data, int(topOffset), int(leftOffset))
+	if width == tileSize && height == tileSize {
+		err = d.Read(buffer, int(xStart), int(yStart), readWidth, readHeight, width, height)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
-		data = out
+
+		if array.AllEquals(buffer, d.nodata) {
+			// tile is empty
+			hasData = false
+			return
+		}
+		return true, nil
 	}
 
-	return data, tileTransform, nil
+	// TODO: figure out how to use buffer for reading via GDAL without data
+	// getting striped, then get a buffer to paste into from sync.Pool
+
+	// only part of tile could be read, need to allocate a new buffer to receive data
+	var readBuffer interface{}
+	switch buffer.(type) {
+	case []uint8:
+		readBuffer = make([]uint8, width*height)
+
+	default:
+		panic("Other dtypes not yet supported for ReadTile()")
+	}
+
+	err = d.Read(readBuffer, int(xStart), int(yStart), readWidth, readHeight, width, height)
+	if err != nil {
+		return
+	}
+
+	array.Paste(buffer, tileSize, tileSize, readBuffer, height, width, int(topOffset), int(leftOffset))
+
+	return true, nil
 }
 
 func WriteGeoTIFF(filename string, data *Array, transform *affine.Affine, crs string, nodata interface{}) error {

@@ -13,6 +13,32 @@ type Array struct {
 	buffer interface{}
 }
 
+//  Create a new array and fill with fill value, which must be of same type
+// as dtype
+func NewArray(width int, height int, dtype string, fillValue interface{}) *Array {
+	size := width * height
+	var buffer interface{}
+
+	switch dtype {
+	case "uint8":
+		typedbuffer := make([]uint8, size)
+		fill := fillValue.(uint8)
+		for i := 0; i < size; i++ {
+			typedbuffer[i] = fill
+		}
+		buffer = typedbuffer
+	default:
+		panic("Other dtypes not yet supported for NewArray")
+	}
+
+	return &Array{
+		DType:  dtype,
+		Width:  width,
+		Height: height,
+		buffer: buffer,
+	}
+}
+
 func (a *Array) String() string {
 	padding := len(fmt.Sprint(a.Max())) + 1
 	var arrayStr strings.Builder
@@ -121,31 +147,6 @@ func (a *Array) Uint8Buffer() (buffer []uint8, bits uint8, err error) {
 		panic("Uint8Buffer() not yet supported for other data types")
 	}
 	return
-}
-
-//  Create a new array and fill with fill value, which must be of same type
-// as dtype
-func NewArray(width int, height int, dtype string, fillValue interface{}) *Array {
-	size := width * height
-	var buffer interface{}
-
-	switch dtype {
-	case "uint8":
-		typedbuffer := make([]uint8, size)
-		for i := 0; i < size; i++ {
-			typedbuffer[i] = fillValue.(uint8)
-		}
-		buffer = typedbuffer
-	default:
-		panic("Other dtypes not yet supported for NewArray")
-	}
-
-	return &Array{
-		DType:  dtype,
-		Width:  width,
-		Height: height,
-		buffer: buffer,
-	}
 }
 
 func (target *Array) Paste(source *Array, rowOffset int, colOffset int) error {
