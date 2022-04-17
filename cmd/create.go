@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/brendan-ward/rastertiler/affine"
-	"github.com/brendan-ward/rastertiler/array"
 	"github.com/brendan-ward/rastertiler/encoding"
 	"github.com/brendan-ward/rastertiler/gdal"
 	"github.com/brendan-ward/rastertiler/mbtiles"
@@ -69,7 +68,7 @@ var createCmd = &cobra.Command{
 func init() {
 	createCmd.Flags().Uint8VarP(&minzoom, "minzoom", "Z", 0, "minimum zoom level")
 	createCmd.Flags().Uint8VarP(&maxzoom, "maxzoom", "z", 0, "maximum zoom level")
-	createCmd.Flags().IntVarP(&tileSize, "tilesize", "s", 256, "tile size in pixels")
+	createCmd.Flags().IntVarP(&tileSize, "tilesize", "s", 512, "tile size in pixels")
 	createCmd.Flags().StringVarP(&tilesetName, "name", "n", "", "tileset name")
 	createCmd.Flags().StringVarP(&description, "description", "d", "", "tileset description")
 	createCmd.Flags().StringVarP(&attribution, "attribution", "a", "", "tileset description")
@@ -153,7 +152,6 @@ func create(infilename string, outfilename string) error {
 		go func() {
 			defer wg.Done()
 
-			var bits uint8
 			var buffer interface{}
 			var tileTransform affine.Affine
 
@@ -177,14 +175,19 @@ func create(infilename string, outfilename string) error {
 			switch ds.DType() {
 			case "uint8":
 				buffer = make([]uint8, tileSize*tileSize, tileSize*tileSize)
-				bits = 8
+
 				if colormap != nil {
 					encoder = encoding.NewColormapEncoder(tileSize, tileSize, colormap)
 				} else {
 					encoder = encoding.NewGrayscaleEncoder(tileSize, tileSize)
 				}
+			// TODO: uint16
+			case "uint32":
+				buffer = make([]uint32, tileSize*tileSize, tileSize*tileSize)
+				encoder = encoding.NewRGBEncoder(tileSize, tileSize)
+
 			default:
-				panic("encoding not yet supported for other dtypes")
+				panic(fmt.Sprintf("encoding not yet supported for other dtypes: %v", ds.DType()))
 			}
 
 			for tileID := range queue {
@@ -194,35 +197,19 @@ func create(infilename string, outfilename string) error {
 				}
 
 				if hasData {
-					png, err := encoder.Encode(array.AsUint8(buffer), bits)
+					png, err := encoder.Encode(buffer)
 					if err != nil {
 						panic(err)
 					}
 					mbtiles.WriteTile(con, tileID, png)
 				}
-
-				// data, _, err := vrt.ReadTile(tileID, tileSize)
-				// if err != nil {
-				// 	panic(err)
-				// }
-
-				// if data != nil && !data.EqualsValue(vrt.Nodata()) {
-				// 	buffer, bits, err := data.Uint8Buffer()
-				// 	if err != nil {
-				// 		panic(err)
-				// 	}
-
-				// 	png, err := encoder.Encode(buffer, bits)
-				// 	if err != nil {
-				// 		panic(err)
-				// 	}
-				// 	mbtiles.WriteTile(con, tileID, png)
-				// }
 			}
 		}()
 	}
 
 	wg.Wait()
+
+	db.CreateIndexes()
 
 	return nil
 }

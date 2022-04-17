@@ -22,12 +22,13 @@ func NewGrayscaleEncoder(width int, height int) *GrayscaleEncoder {
 }
 
 // Encode uint8 values to 8-bit grayscale PNG
-func (e *GrayscaleEncoder) Encode(data []uint8, bits uint8) ([]byte, error) {
-	var value uint8
-	for row := 0; row < e.height; row++ {
-		for col := 0; col < e.width; col++ {
-			value = data[row*e.width+col]
-			e.img.Pix[row*e.width+col] = value
+func (e *GrayscaleEncoder) Encode(buffer interface{}) ([]byte, error) {
+	switch typedBuffer := buffer.(type) {
+	case []uint8:
+		for row := 0; row < e.height; row++ {
+			for col := 0; col < e.width; col++ {
+				e.img.Pix[row*e.width+col] = typedBuffer[row*e.width+col]
+			}
 		}
 	}
 

@@ -23,8 +23,7 @@ type MBtilesWriter struct {
 // Create a tiles table structure that allows us to de-duplicate tile images
 // shared by multiple tileIDs (e.g., blank tiles, ocean tiles)
 const init_sql = `
-CREATE TABLE IF NOT EXISTS metadata (name text, value text);
-CREATE UNIQUE INDEX IF NOT EXISTS name ON metadata (name);
+CREATE TABLE IF NOT EXISTS metadata (name text NOT NULL PRIMARY KEY, value text);
 
 CREATE TABLE IF NOT EXISTS map (
 	zoom_level INTEGER,
@@ -32,13 +31,16 @@ CREATE TABLE IF NOT EXISTS map (
 	tile_row INTEGER,
 	tile_id TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS map_index ON map (zoom_level, tile_column, tile_row);
 
-CREATE TABLE IF NOT EXISTS images (tile_data blob, tile_id text);
-CREATE UNIQUE INDEX IF NOT EXISTS images_id ON images (tile_id);
+CREATE TABLE IF NOT EXISTS images (tile_data blob, tile_id text NOT NULL PRIMARY KEY);
+
 CREATE VIEW IF NOT EXISTS tiles AS
 	SELECT zoom_level, tile_column, tile_row, tile_data
 	FROM map JOIN images ON images.tile_id = map.tile_id;
+`
+
+const index_sql = `
+CREATE UNIQUE INDEX IF NOT EXISTS map_index ON map (zoom_level, tile_column, tile_row);
 `
 
 func NewMBtilesWriter(path string, poolsize int) (*MBtilesWriter, error) {
@@ -123,9 +125,9 @@ func (db *MBtilesWriter) WriteMetadata(name string, description string, attribut
 		return fmt.Errorf("cannot write to closed mbtiles database")
 	}
 
-	con, e := db.GetConnection()
-	if e != nil {
-		return e
+	con, err := db.GetConnection()
+	if err != nil {
+		return err
 	}
 	defer db.CloseConnection(con)
 
@@ -154,7 +156,7 @@ func (db *MBtilesWriter) WriteMetadata(name string, description string, attribut
 	if err = writeMetadataItem(con, "center", fmt.Sprintf("%.5f,%.5f,%v", (bounds.Xmax-bounds.Xmin)/2.0, (bounds.Ymax-bounds.Ymin)/2.0, minZoom)); err != nil {
 		return err
 	}
-	if err = writeMetadataItem(con, "bounds", fmt.Sprintf("%.5f,%.5f,%.5f,%.5f", bounds.Xmax, bounds.Ymin, bounds.Xmax, bounds.Ymax)); err != nil {
+	if err = writeMetadataItem(con, "bounds", fmt.Sprintf("%.5f,%.5f,%.5f,%.5f", bounds.Xmin, bounds.Ymin, bounds.Xmax, bounds.Ymax)); err != nil {
 		return err
 	}
 	if err = writeMetadataItem(con, "type", "overlay"); err != nil {
@@ -191,16 +193,37 @@ func WriteTile(con *sqlite.Conn, tile *tiles.TileID, png []byte) (err error) {
 	h.Write(png)
 	id := hex.EncodeToString(h.Sum(nil))
 
-	err = sqlitex.Exec(con, "INSERT OR REPLACE INTO images (tile_id, tile_data) values (?, ?)",
+	// Note: tile data may not always be unique, use tile_id to determine this
+	err = sqlitex.Exec(con, "INSERT OR IGNORE INTO images (tile_id, tile_data) values (?, ?)",
 		nil, id, png)
 	if err != nil {
 		return fmt.Errorf("could not write tile %v to mbtiles: %q", tile, err)
 	}
 
-	err = sqlitex.Exec(con, "INSERT OR REPLACE INTO map (zoom_level, tile_column, tile_row, tile_id) values(?, ?, ?, ?)",
+	// tile zoom, x, y should always be unique
+	err = sqlitex.Exec(con, "INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) values(?, ?, ?, ?)",
 		nil, tile.Zoom, tile.X, y, id)
 	if err != nil {
 		return fmt.Errorf("could not write tile %v to mbtiles: %q", tile, err)
+	}
+
+	return nil
+}
+
+func (db *MBtilesWriter) CreateIndexes() error {
+	if db == nil || db.pool == nil {
+		return fmt.Errorf("cannot write to closed mbtiles database")
+	}
+
+	con, err := db.GetConnection()
+	if err != nil {
+		return err
+	}
+	defer db.CloseConnection(con)
+
+	err = sqlitex.ExecScript(con, index_sql)
+	if err != nil {
+		return fmt.Errorf("could not create indexes: %q", err)
 	}
 
 	return nil

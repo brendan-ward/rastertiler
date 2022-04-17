@@ -265,13 +265,31 @@ func (d *Dataset) GetWarpedVRT(crs string) (*Dataset, error) {
 	targetSRSName := C.CString(crs)
 	defer C.free(unsafe.Pointer(targetSRSName))
 
+	// options don't seem to help performance
+	options := []string{
+		"SKIP_NOSOURCE=YES", "UNIFIED_SRC_NODATA=YES", "NUM_THREADS=1",
+	}
+	optsLength := len(options)
+	gdalOpts := make([]*C.char, optsLength+1)
+	for i := 0; i < len(options); i++ {
+		gdalOpts[i] = C.CString(options[i])
+		defer C.free(unsafe.Pointer(gdalOpts[i]))
+	}
+	gdalOpts[optsLength] = (*C.char)(unsafe.Pointer(nil))
+
+	var warpOpts *C.GDALWarpOptions
+	warpOpts = C.GDALCreateWarpOptions()
+	warpOpts.papszWarpOptions = (**C.char)(unsafe.Pointer(&gdalOpts[0]))
+	// use 1024 MB memory for warping (doesn't seem to help)
+	// warpOpts.dfWarpMemoryLimit = (C.double)(1024 * 1024 * 1024)
+
 	ptr := C.GDALAutoCreateWarpedVRT(
 		d.ptr,
 		C.GDALGetProjectionRef(d.ptr),
 		targetSRSName,
 		C.GDALResampleAlg(RESAMPLING_NEAREST),
 		0,
-		nil,
+		warpOpts,
 	)
 
 	if unsafe.Pointer(ptr) == nil {
@@ -285,29 +303,14 @@ func (d *Dataset) Read(buffer interface{}, offsetX int, offsetY int, width int, 
 	d.mustBeOpen()
 
 	gdalDataType := C.GDALGetRasterDataType(C.GDALGetRasterBand(d.ptr, 1))
-	// dtype := gdalDtypeStr[int(gdalDataType)]
 
-	// var array *Array
 	var bufferPtr unsafe.Pointer
-	// size := bufferWidth * bufferHeight
-
-	// switch dtype {
-	// // TODO: other data types
-	// case "uint8":
-	// 	uint8Buffer := make([]uint8, size)
-	// 	array = &Array{
-	// 		DType:  dtype,
-	// 		Width:  bufferWidth,
-	// 		Height: bufferHeight,
-	// 		buffer: uint8Buffer,
-	// 	}
-	// 	bufferPtr = unsafe.Pointer(&uint8Buffer[0])
-	// default:
-	// 	panic("Other dtypes not yet supported for reading")
-	// }
-
 	switch typedBuffer := buffer.(type) {
 	case []uint8:
+		bufferPtr = unsafe.Pointer(&typedBuffer[0])
+	case []uint16:
+		bufferPtr = unsafe.Pointer(&typedBuffer[0])
+	case []uint32:
 		bufferPtr = unsafe.Pointer(&typedBuffer[0])
 	default:
 		panic("Other dtypes not yet supported for Read()")
@@ -395,6 +398,10 @@ func (d *Dataset) ReadTile(buffer interface{}, tileTransform *affine.Affine, til
 	switch buffer.(type) {
 	case []uint8:
 		readBuffer = make([]uint8, width*height)
+	case []uint16:
+		readBuffer = make([]uint16, width*height)
+	case []uint32:
+		readBuffer = make([]uint32, width*height)
 
 	default:
 		panic("Other dtypes not yet supported for ReadTile()")

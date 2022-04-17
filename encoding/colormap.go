@@ -111,12 +111,15 @@ func NewColormapEncoder(width int, height int, colormap *Colormap) *ColormapEnco
 	}
 }
 
-func (e *ColormapEncoder) Encode(data []uint8, bits uint8) ([]byte, error) {
-	var value uint8
-	for row := 0; row < e.height; row++ {
-		for col := 0; col < e.width; col++ {
-			value = data[row*e.width+col]
-			e.img.SetColorIndex(col, row, e.colormap.GetIndex(value))
+func (e *ColormapEncoder) Encode(buffer interface{}) ([]byte, error) {
+	switch typedBuffer := buffer.(type) {
+	case []uint8:
+		var value uint8
+		for row := 0; row < e.height; row++ {
+			for col := 0; col < e.width; col++ {
+				value = typedBuffer[row*e.width+col]
+				e.img.SetColorIndex(col, row, e.colormap.GetIndex(value))
+			}
 		}
 	}
 
