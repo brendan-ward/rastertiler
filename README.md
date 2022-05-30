@@ -4,6 +4,8 @@ A Go-based single-band GeoTIFF to PNG mbtiles creator.
 
 Requires GDAL >= 3.4 to be installed on the system.
 
+**WARNING** this project has been superseded by [rastertiler-rs](https://github.com/brendan-ward/rastertiler-rs), a better, faster implementation in Rust. This project will no longer be actively developed. See below for more information.
+
 ## Installation
 
 `go get https://github.com/brendan-ward/rastertiler`
@@ -43,6 +45,16 @@ To use a colormap to render the `uint8` data to paletted PNG
 ```bash
 rastertiler create example.tif example.mbtiles --minzoom 0 --maxzoom 2 --colormap "1:#686868,2:#fbb4b9,3:#c51b8a,4:#49006a"
 ```
+
+## Porting to Rust
+
+This project has been superseded by a port into Rust: https://github.com/brendan-ward/rastertiler-rs
+
+Because this project uses GDAL for reading and warping data from a GeoTIFF to create
+many tiles, the calls using CGO were in a hot loop and incurred more overhead
+than is ideal. The Rust implementation does not incur this overhead and is
+roughly 20% faster. The Rust PNG library also provided more flexibility for
+writing RGB and paletted images.
 
 ## Credits
 
