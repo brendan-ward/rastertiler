@@ -84,9 +84,9 @@ func produce(minZoom uint8, maxZoom uint8, bounds *affine.Bounds, queue chan<- *
 	uiprogress.Start()
 
 	for zoom := minZoom; zoom <= maxZoom; zoom++ {
-		z := zoom
 		minTile, maxTile := tiles.TileRange(zoom, bounds)
-		count := ((maxTile.X - minTile.X) * (maxTile.Y - minTile.Y)) + 1
+		z := zoom
+		count := (maxTile.X - minTile.X + 1) * (maxTile.Y - minTile.Y + 1)
 		bar := uiprogress.AddBar(int(count)).AppendCompleted().PrependElapsed()
 		bar.PrependFunc(func(b *uiprogress.Bar) string {
 			return fmt.Sprintf("zoom %2v (%8v/%8v)", z, b.Current(), count)
